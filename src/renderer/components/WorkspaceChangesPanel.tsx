@@ -62,6 +62,13 @@ interface WorkspaceChangesPanelProps {
     onPendingCountChange?: (count: number) => void;
 }
 
+// Maps file status to a human-readable verb used in toast messages
+const REVERT_VERB: Record<PendingFile['status'], string> = {
+    deleted: 'Restored',
+    modified: 'Discarded',
+    new: 'Removed',
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatRelativeTime(dateStr: string): string {
@@ -187,7 +194,7 @@ export default function WorkspaceChangesPanel({
         }
     }, [apiPost, agentDir, refresh]);
 
-    const handleRevertFile = useCallback(async (filePath: string) => {
+    const handleRevertFile = useCallback(async (filePath: string, fileStatus: PendingFile['status']) => {
         setRevertingFile(filePath);
         try {
             const res = await apiPost<GitRevertResponse>('/api/git/revert', {
@@ -196,7 +203,7 @@ export default function WorkspaceChangesPanel({
             });
             if (!isMountedRef.current) return;
             if (res.success) {
-                toastRef.current.success('File reverted');
+                toastRef.current.success(`${REVERT_VERB[fileStatus]}: ${filePath}`);
                 await fetchStatus();
             } else {
                 toastRef.current.error(res.error ?? 'Revert failed');
@@ -311,7 +318,7 @@ export default function WorkspaceChangesPanel({
                                     key={file.path}
                                     file={file}
                                     isReverting={revertingFile === file.path}
-                                    onRevert={handleRevertFile}
+                                    onRevert={(path) => handleRevertFile(path, file.status)}
                                 />
                             ))}
                         </ul>
@@ -388,7 +395,7 @@ function PendingFileRow({
             <button
                 onClick={() => onRevert(file.path)}
                 disabled={isReverting}
-                title={`Revert ${file.path}`}
+                title={file.status === 'deleted' ? `Restore ${file.path}` : `Discard changes to ${file.path}`}
                 className="ml-1 shrink-0 rounded p-0.5 text-[var(--ink-faint)] hover:text-red-500 active:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
             >
                 {isReverting

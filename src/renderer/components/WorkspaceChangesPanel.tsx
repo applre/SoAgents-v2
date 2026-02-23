@@ -60,6 +60,8 @@ interface WorkspaceChangesPanelProps {
     refreshTrigger?: number;
     /** Called whenever the pending file count changes, for badge display */
     onPendingCountChange?: (count: number) => void;
+    /** Called after a revert or submit so the Files tab can refresh its tree */
+    onFilesChanged?: () => void;
 }
 
 // Maps file status to a human-readable verb used in toast messages
@@ -93,6 +95,7 @@ export default function WorkspaceChangesPanel({
     agentDir,
     refreshTrigger = 0,
     onPendingCountChange,
+    onFilesChanged,
 }: WorkspaceChangesPanelProps) {
     const { apiGet, apiPost } = useTabApi();
     const toast = useToast();
@@ -100,6 +103,8 @@ export default function WorkspaceChangesPanel({
     toastRef.current = toast;
     const onPendingCountChangeRef = useRef(onPendingCountChange);
     onPendingCountChangeRef.current = onPendingCountChange;
+    const onFilesChangedRef = useRef(onFilesChanged);
+    onFilesChangedRef.current = onFilesChanged;
 
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -168,6 +173,7 @@ export default function WorkspaceChangesPanel({
             if (res.success) {
                 setDescription('');
                 toastRef.current.success('Checkpoint saved');
+                onFilesChangedRef.current?.();
                 await Promise.all([fetchStatus(), fetchLog()]);
             } else {
                 toastRef.current.error(res.error ?? 'Submit failed');
@@ -204,6 +210,7 @@ export default function WorkspaceChangesPanel({
             if (!isMountedRef.current) return;
             if (res.success) {
                 toastRef.current.success(`${REVERT_VERB[fileStatus]}: ${filePath}`);
+                onFilesChangedRef.current?.();
                 await fetchStatus();
             } else {
                 toastRef.current.error(res.error ?? 'Revert failed');
@@ -226,6 +233,7 @@ export default function WorkspaceChangesPanel({
             if (!isMountedRef.current) return;
             if (res.success) {
                 toastRef.current.success('All changes reverted');
+                onFilesChangedRef.current?.();
                 await fetchStatus();
             } else {
                 toastRef.current.error(res.error ?? 'Revert failed');

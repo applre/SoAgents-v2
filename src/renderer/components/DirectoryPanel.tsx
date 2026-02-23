@@ -1266,6 +1266,7 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
               agentDir={agentDir}
               refreshTrigger={refreshTrigger}
               onPendingCountChange={setPendingCount}
+              onFilesChanged={refresh}
             />
           )}
         </>

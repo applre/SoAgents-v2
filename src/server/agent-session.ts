@@ -170,6 +170,8 @@ const messageQueue: MessageQueueItem[] = [];
 const _pendingAttachments: MessageAttachment[] = [];
 // Current permission mode for the session (updates on each user message)
 let currentPermissionMode: PermissionMode = 'auto';
+// Permission mode before AI-triggered plan mode (for restore on ExitPlanMode)
+let prePlanPermissionMode: PermissionMode | null = null;
 // Current model for the session (updates on each user message if changed)
 let currentModel: string | undefined = undefined;
 // Provider environment config (baseUrl, apiKey, authType) for third-party providers
@@ -573,10 +575,11 @@ export function setSessionModel(model: string): void {
   currentModel = model;
   console.log(`[agent] session model set: ${oldModel ?? 'undefined'} -> ${model}`);
 
-  // If a session is actively running (not pre-warming), apply model change to subprocess.
-  // This ensures dropdown model switches take effect immediately, even if the sync
-  // arrives before the next user message triggers applySessionConfig.
-  if (querySession && !isPreWarming) {
+  // Apply model change to SDK subprocess immediately (including during pre-warm).
+  // Without this, changing model during pre-warm creates a desync:
+  //   currentModel is updated but SDK subprocess keeps the old model,
+  //   and applySessionConfig() on first message sees no diff → skips the SDK call.
+  if (querySession) {
     querySession.setModel(model).catch(err => {
       console.error('[agent] failed to apply model to running session:', err);
     });
@@ -1098,6 +1101,12 @@ export function handleExitPlanModeResponse(requestId: string, approved: boolean)
   }
   clearTimeout(pending.timer);
   pendingExitPlanMode.delete(requestId);
+  // Restore currentPermissionMode so applySessionConfig won't override SDK's internal state
+  if (approved && prePlanPermissionMode) {
+    currentPermissionMode = prePlanPermissionMode;
+    prePlanPermissionMode = null;
+    console.debug(`[ExitPlanMode] Restored currentPermissionMode to: ${currentPermissionMode}`);
+  }
   pending.resolve(approved);
   return true;
 }
@@ -1153,6 +1162,12 @@ export function handleEnterPlanModeResponse(requestId: string, approved: boolean
   }
   clearTimeout(pending.timer);
   pendingEnterPlanMode.delete(requestId);
+  // Sync currentPermissionMode so applySessionConfig won't override SDK's plan mode
+  if (approved) {
+    prePlanPermissionMode = currentPermissionMode;
+    currentPermissionMode = 'plan';
+    console.debug(`[EnterPlanMode] Saved prePlanPermissionMode=${prePlanPermissionMode}, switched to plan`);
+  }
   pending.resolve(approved);
   return true;
 }
@@ -1326,6 +1341,7 @@ export function clearSessionPermissions(): void {
   pendingAskUserQuestions.clear();
   pendingExitPlanMode.clear();
   pendingEnterPlanMode.clear();
+  prePlanPermissionMode = null;
 }
 
 /**
@@ -1737,18 +1753,19 @@ function parseSystemInitInfo(message: unknown): SystemInitInfo | null {
  * - A status message with status: null (clearing the status)
  * - A status message with status: 'compacting' etc.
  */
-function parseSystemStatus(message: unknown): { isStatusMessage: boolean; status: string | null } {
+function parseSystemStatus(message: unknown): { isStatusMessage: boolean; status: string | null; permissionMode: string | null } {
   if (!message || typeof message !== 'object') {
-    return { isStatusMessage: false, status: null };
+    return { isStatusMessage: false, status: null, permissionMode: null };
   }
   const record = message as Record<string, unknown>;
   if (record.type !== 'system' || record.subtype !== 'status') {
-    return { isStatusMessage: false, status: null };
+    return { isStatusMessage: false, status: null, permissionMode: null };
   }
-  // This IS a status message, status can be 'compacting' or null
+  // This IS a status message, status can be 'compacting' or null, permissionMode can be 'plan'/'acceptEdits'/etc.
   return {
     isStatusMessage: true,
-    status: typeof record.status === 'string' ? record.status : null
+    status: typeof record.status === 'string' ? record.status : null,
+    permissionMode: typeof record.permissionMode === 'string' ? record.permissionMode : null,
   };
 }
 
@@ -3591,11 +3608,24 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
       }
 
-      // Handle system status (e.g., compacting)
+      // Handle system status (e.g., compacting, plan mode changes)
       const statusResult = parseSystemStatus(sdkMessage);
       if (statusResult.isStatusMessage) {
         console.log(`[agent] System status: ${statusResult.status}`);
         broadcast('chat:system-status', { status: statusResult.status });
+
+        // Detect SDK-initiated plan mode changes (EnterPlanMode is auto-allowed by SDK)
+        if (statusResult.permissionMode === 'plan' && currentPermissionMode !== 'plan') {
+          prePlanPermissionMode = currentPermissionMode;
+          currentPermissionMode = 'plan';
+          broadcast('enter-plan-mode:request', { requestId: `sdk_auto_${Date.now()}`, autoApproved: true });
+          console.log(`[agent] SDK auto-entered plan mode, saved prePlanPermissionMode=${prePlanPermissionMode}`);
+        } else if (statusResult.permissionMode && statusResult.permissionMode !== 'plan' && prePlanPermissionMode) {
+          // SDK exited plan mode (e.g. after ExitPlanMode approval)
+          currentPermissionMode = prePlanPermissionMode;
+          prePlanPermissionMode = null;
+          console.log(`[agent] SDK exited plan mode, restored currentPermissionMode=${currentPermissionMode}`);
+        }
       }
 
       const agentError = extractAgentError(sdkMessage);

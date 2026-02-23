@@ -127,6 +127,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
   const [showCronSettings, setShowCronSettings] = useState(false);
   const [cronPrompt, setCronPrompt] = useState('');
 
+  // Track permission mode before AI-triggered plan mode (for restore on ExitPlanMode)
+  const prePlanPermissionModeRef = useRef<PermissionMode | null>(null);
+
   // Startup overlay state (for auto-send from Launcher)
   const [showStartupOverlay, setShowStartupOverlay] = useState(!!initialMessage);
 
@@ -987,6 +990,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
 
   const handleExitPlanModeApprove = useCallback(() => {
     void respondExitPlanMode(true);
+    // Mode restore is handled by the useEffect below reacting to resolved='approved'
   }, [respondExitPlanMode]);
 
   const handleExitPlanModeReject = useCallback(() => {
@@ -995,11 +999,28 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
 
   const handleEnterPlanModeApprove = useCallback(() => {
     void respondEnterPlanMode(true);
+    // Mode switch is handled by the useEffect below reacting to resolved='approved'
   }, [respondEnterPlanMode]);
 
   const handleEnterPlanModeReject = useCallback(() => {
     void respondEnterPlanMode(false);
   }, [respondEnterPlanMode]);
+
+  // React to plan mode changes: auto-approved by SDK, or user-approved via card
+  // Single source of truth for permission mode switch during plan mode
+  useEffect(() => {
+    if (pendingEnterPlanMode?.resolved === 'approved' && permissionMode !== 'plan') {
+      prePlanPermissionModeRef.current = permissionMode;
+      setPermissionMode('plan');
+    }
+  }, [pendingEnterPlanMode?.resolved, pendingEnterPlanMode?.requestId]); // eslint-disable-line react-hooks/exhaustive-deps -- read permissionMode without dep to avoid loop
+
+  useEffect(() => {
+    if (pendingExitPlanMode?.resolved === 'approved' && prePlanPermissionModeRef.current) {
+      setPermissionMode(prePlanPermissionModeRef.current);
+      prePlanPermissionModeRef.current = null;
+    }
+  }, [pendingExitPlanMode?.resolved, pendingExitPlanMode?.requestId]);
 
   // Stable callback for time rewind — uses ref for messages to keep reference stable
   const handleRewind = useCallback((messageId: string) => {

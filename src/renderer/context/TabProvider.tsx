@@ -1136,10 +1136,15 @@ export default function TabProvider({
             }
 
             case 'enter-plan-mode:request': {
-                const payload = data as { requestId: string } | null;
+                const payload = data as { requestId: string; autoApproved?: boolean } | null;
                 if (payload?.requestId) {
-                    setPendingEnterPlanMode({ requestId: payload.requestId });
-                    notifyPlanModeRequest();
+                    if (payload.autoApproved) {
+                        // SDK auto-allowed EnterPlanMode — show as already approved, no user action needed
+                        setPendingEnterPlanMode({ requestId: payload.requestId, autoApproved: true, resolved: 'approved' });
+                    } else {
+                        setPendingEnterPlanMode({ requestId: payload.requestId });
+                        notifyPlanModeRequest();
+                    }
                 }
                 break;
             }
@@ -1710,11 +1715,11 @@ export default function TabProvider({
         }
     }, [pendingAskUserQuestion, postJson]);
 
-    // Respond to ExitPlanMode request
+    // Respond to ExitPlanMode request (keep card visible with resolved status)
     const respondExitPlanMode = useCallback(async (approved: boolean) => {
         if (!pendingExitPlanMode) return;
         const requestId = pendingExitPlanMode.requestId;
-        setPendingExitPlanMode(null);
+        setPendingExitPlanMode(prev => prev ? { ...prev, resolved: approved ? 'approved' : 'rejected' } : null);
         try {
             await postJson('/api/exit-plan-mode/respond', { requestId, approved });
         } catch (error) {
@@ -1722,11 +1727,11 @@ export default function TabProvider({
         }
     }, [pendingExitPlanMode, postJson]);
 
-    // Respond to EnterPlanMode request
+    // Respond to EnterPlanMode request (keep card visible with resolved status)
     const respondEnterPlanMode = useCallback(async (approved: boolean) => {
         if (!pendingEnterPlanMode) return;
         const requestId = pendingEnterPlanMode.requestId;
-        setPendingEnterPlanMode(null);
+        setPendingEnterPlanMode(prev => prev ? { ...prev, resolved: approved ? 'approved' : 'rejected' } : null);
         try {
             await postJson('/api/enter-plan-mode/respond', { requestId, approved });
         } catch (error) {

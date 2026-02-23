@@ -347,6 +347,7 @@ await updateImBotConfig(botId, updates);
 | 提交前不检查分支 | 误提交到错误分支 | `git branch --show-current` |
 | 在 main 分支直接提交 | 破坏主分支稳定性 | 切换到 dev 分支 |
 | 未经确认合并到 main | 绕过测试流程 | 先询问用户确认 |
+| 后端新增 SSE 事件不注册白名单 | 前端永远收不到该事件（静默丢弃） | 在 `SseConnection.ts` 的 `JSON_EVENTS` 中注册新事件名 |
 
 ---
 
@@ -478,7 +479,7 @@ log::info!("internal message");
 | 问题 | 排查方向 |
 |------|----------|
 | Tab 切换后功能异常 | 检查是否用了全局 API 而非 Tab-scoped API |
-| SSE 事件未收到 | 确认连接状态、事件名格式 `sse:${tabId}:${event}` |
+| SSE 事件未收到 | **首先检查 `SseConnection.ts` 的 `JSON_EVENTS` 白名单是否注册了该事件**，然后确认连接状态、事件名格式 `sse:${tabId}:${event}` |
 | useEffect 频繁触发 | 检查依赖数组是否有不稳定引用 |
 | 保存文件弹权限框 | Context 不稳定导致 loadData 重复执行 |
 | 新对话后旧消息重现 | 使用 `resetSession()` 而非直接清理状态 |

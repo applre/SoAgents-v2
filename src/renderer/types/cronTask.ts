@@ -63,6 +63,11 @@ export interface CronTask {
   name?: string;
   /** Computed next execution time (enriched by Rust) */
   nextExecutionAt?: string;
+  /** Internal SDK session ID where conversation data is stored.
+   *  Differs from sessionId (Sidecar session key) for IM Bot cron tasks. */
+  internalSessionId?: string;
+  /** Last activity timestamp — updated on create, start, stop, execute */
+  updatedAt?: string;
 }
 
 /**

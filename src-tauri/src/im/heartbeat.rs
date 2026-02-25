@@ -64,10 +64,7 @@ impl HeartbeatRunner {
             bot_label,
             config: Arc::clone(&config),
             last_push_text: Arc::new(Mutex::new(None)),
-            http_client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(330)) // 5.5 min (heartbeat timeout is 5 min)
-                .build()
-                .unwrap_or_default(),
+            http_client: crate::local_http::json_client(Duration::from_secs(330)), // 5.5 min (heartbeat timeout is 5 min)
             executing: Arc::new(Mutex::new(false)),
             current_model,
             mcp_servers_json,
@@ -200,7 +197,24 @@ impl HeartbeatRunner {
         }
 
         // Gate 3: Concurrent execution guard
-        {
+        // Both paths do check+set in a single lock acquisition to avoid TOCTOU races.
+        if is_high_priority {
+            // High priority (e.g. CronComplete): poll-wait for the lock to become free
+            let start = std::time::Instant::now();
+            loop {
+                let mut executing = self.executing.lock().await;
+                if !*executing {
+                    *executing = true;
+                    break;
+                }
+                drop(executing);
+                if start.elapsed() > Duration::from_secs(60) {
+                    ulog_warn!("[heartbeat] High-priority wake timed out waiting for concurrent execution");
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        } else {
             let mut executing = self.executing.lock().await;
             if *executing {
                 ulog_debug!("[heartbeat] Skipped: previous heartbeat still executing");
@@ -306,10 +320,22 @@ impl HeartbeatRunner {
 
         let result = match self.http_client.post(&url).json(&request).send().await {
             Ok(resp) => {
-                match resp.json::<HeartbeatResponse>().await {
+                let status_code = resp.status();
+                // Read body as text first for diagnostic logging on parse failure
+                let body_text = match resp.text().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        ulog_warn!("[heartbeat] Failed to read response body: {} (status={})", e, status_code);
+                        *self.executing.lock().await = false;
+                        return;
+                    }
+                };
+                match serde_json::from_str::<HeartbeatResponse>(&body_text) {
                     Ok(r) => r,
                     Err(e) => {
-                        ulog_warn!("[heartbeat] Failed to parse response: {}", e);
+                        // Log truncated body for debugging (cap at 300 chars)
+                        let preview = if body_text.len() > 300 { &body_text[..300] } else { &body_text };
+                        ulog_warn!("[heartbeat] Failed to parse response: {} (status={}, body={})", e, status_code, preview);
                         *self.executing.lock().await = false;
                         return;
                     }

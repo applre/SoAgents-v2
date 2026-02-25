@@ -19,10 +19,16 @@ let currentDate: string | null = null;
 let currentFilePath: string | null = null;
 
 /**
- * Get today's date string (YYYY-MM-DD)
+ * Get today's date string (YYYY-MM-DD) in local timezone.
+ * Must use local date (not UTC) to match Rust logger which also uses local date,
+ * so all three log sources (React/Bun/Rust) write to the same daily file.
  */
 function getTodayDate(): string {
-  return new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 /**

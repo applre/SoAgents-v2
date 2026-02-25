@@ -1577,6 +1577,40 @@ export default function TabProvider({
         // eslint-disable-next-line react-hooks/exhaustive-deps -- apiGetJson and postJson are stable
     }, [tabId, clearInteractiveState]);
 
+    // Auto-refresh session when a cron task completes and writes data to the session
+    // we're currently viewing. This handles the case where a Tab opens a cron session
+    // during/after execution on a different Sidecar — the Tab won't get SSE streaming,
+    // so we reload from disk when cron:execution-complete fires.
+    const loadSessionRef = useRef(loadSession);
+    loadSessionRef.current = loadSession;
+
+    useEffect(() => {
+        if (!isTauri()) return;
+
+        let unlisten: (() => void) | undefined;
+
+        (async () => {
+            const { listen } = await import('@tauri-apps/api/event');
+            unlisten = await listen<{ taskId: string; success: boolean; executionCount: number; internalSessionId?: string }>(
+                'cron:execution-complete',
+                (event) => {
+                    const { internalSessionId } = event.payload;
+                    const currentSid = currentSessionIdRef.current;
+
+                    // If this Tab is viewing the cron task's internal session, reload to show AI response
+                    if (internalSessionId && currentSid && internalSessionId === currentSid) {
+                        console.log(`[TabProvider ${tabId}] Cron execution complete for viewed session ${internalSessionId}, reloading`);
+                        loadSessionRef.current(internalSessionId);
+                    }
+                }
+            );
+        })();
+
+        return () => {
+            unlisten?.();
+        };
+    }, [tabId]);
+
     // Track whether initial session has been loaded
     const initialSessionLoadedRef = useRef(false);
     // Track previous sessionId to detect changes (must be before the effect that uses it)

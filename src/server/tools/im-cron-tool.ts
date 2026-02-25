@@ -79,7 +79,7 @@ const scheduleSchema = z.discriminatedUnion('kind', [
 ]);
 
 async function imCronToolHandler(args: {
-  action: 'list' | 'add' | 'update' | 'remove' | 'run';
+  action: 'list' | 'add' | 'update' | 'remove' | 'run' | 'runs' | 'status' | 'wake';
   job?: {
     name?: string;
     schedule: z.infer<typeof scheduleSchema>;
@@ -87,7 +87,14 @@ async function imCronToolHandler(args: {
     sessionTarget?: 'new_session' | 'single_session';
   };
   taskId?: string;
-  patch?: Record<string, unknown>;
+  patch?: {
+    name?: string;
+    message?: string;
+    schedule?: z.infer<typeof scheduleSchema>;
+    intervalMinutes?: number;
+  };
+  limit?: number;
+  text?: string;
 }): Promise<CallToolResult> {
   if (!MANAGEMENT_PORT) {
     return {
@@ -183,9 +190,25 @@ async function imCronToolHandler(args: {
             isError: true,
           };
         }
+
+        // Normalize patch: map "message" → "prompt" (tool schema uses "message", backend uses "prompt")
+        // Also defensively handle AI nesting fields inside "job" (matching "add" schema structure)
+        const rawPatch: Record<string, unknown> = { ...args.patch };
+        if (rawPatch.job && typeof rawPatch.job === 'object') {
+          const job = rawPatch.job as Record<string, unknown>;
+          if (job.message && !rawPatch.message) rawPatch.message = job.message;
+          if (job.name && !rawPatch.name) rawPatch.name = job.name;
+          if (job.schedule && !rawPatch.schedule) rawPatch.schedule = job.schedule;
+          delete rawPatch.job;
+        }
+        if (rawPatch.message) {
+          rawPatch.prompt = rawPatch.message;
+          delete rawPatch.message;
+        }
+
         const result = await managementApi('/api/cron/update', 'POST', {
           taskId: args.taskId,
-          patch: args.patch,
+          patch: rawPatch,
         }) as { ok: boolean; error?: string };
 
         return result.ok
@@ -223,6 +246,75 @@ async function imCronToolHandler(args: {
         return result.ok
           ? { content: [{ type: 'text', text: `Task ${args.taskId} triggered for immediate execution.` }] }
           : { content: [{ type: 'text', text: `Error: ${result.error}` }], isError: true };
+      }
+
+      case 'runs': {
+        if (!args.taskId) {
+          return {
+            content: [{ type: 'text', text: 'Error: "taskId" is required for "runs" action.' }],
+            isError: true,
+          };
+        }
+        const limit = args.limit || 20;
+        const resp = await managementApi(
+          `/api/cron/runs?taskId=${encodeURIComponent(args.taskId)}&limit=${limit}`,
+        ) as { ok: boolean; runs: Array<{ ts: number; ok: boolean; duration_ms: number; content?: string; error?: string }> };
+
+        if (!resp.runs || resp.runs.length === 0) {
+          return { content: [{ type: 'text', text: 'No execution records found for this task.' }] };
+        }
+
+        const lines = resp.runs.map((r, i) => {
+          const time = new Date(r.ts).toISOString();
+          const status = r.ok ? 'OK' : 'FAIL';
+          const dur = r.duration_ms < 1000 ? `${r.duration_ms}ms` : `${(r.duration_ms / 1000).toFixed(1)}s`;
+          let line = `${i + 1}. [${status}] ${time} (${dur})`;
+          if (r.error) line += `\n   Error: ${r.error}`;
+          if (r.content) line += `\n   Output: ${r.content.slice(0, 120)}${r.content.length > 120 ? '...' : ''}`;
+          return line;
+        });
+
+        return {
+          content: [{ type: 'text', text: `Execution History (last ${resp.runs.length}):\n\n${lines.join('\n\n')}` }],
+        };
+      }
+
+      case 'status': {
+        if (!imCronContext) {
+          return {
+            content: [{ type: 'text', text: 'Error: No IM context available.' }],
+            isError: true,
+          };
+        }
+        const resp = await managementApi(
+          `/api/cron/status?botId=${encodeURIComponent(imCronContext.botId)}`,
+        ) as { ok: boolean; totalTasks: number; runningTasks: number; lastExecutedAt?: string; nextExecutionAt?: string };
+
+        const parts = [
+          `Total tasks: ${resp.totalTasks}`,
+          `Running: ${resp.runningTasks}`,
+        ];
+        if (resp.lastExecutedAt) parts.push(`Last executed: ${resp.lastExecutedAt}`);
+        if (resp.nextExecutionAt) parts.push(`Next execution: ${resp.nextExecutionAt}`);
+
+        return { content: [{ type: 'text', text: `Cron Status:\n${parts.join('\n')}` }] };
+      }
+
+      case 'wake': {
+        if (!imCronContext) {
+          return {
+            content: [{ type: 'text', text: 'Error: No IM context available.' }],
+            isError: true,
+          };
+        }
+        const resp = await managementApi('/api/im/wake', 'POST', {
+          botId: imCronContext.botId,
+          text: args.text || undefined,
+        }) as { ok: boolean; error?: string };
+
+        return resp.ok
+          ? { content: [{ type: 'text', text: 'Heartbeat wake triggered.' }] }
+          : { content: [{ type: 'text', text: `Wake failed: ${resp.error}` }], isError: true };
       }
 
       default:
@@ -266,6 +358,9 @@ Use this tool when the user wants to:
 - Create a recurring check ("check email every hour")
 - Schedule a one-time task ("at 3pm, send me the weather")
 - List/update/delete existing scheduled tasks
+- View execution history of a task ("runs")
+- Check overall task statistics ("status")
+- Manually trigger a heartbeat check ("wake")
 
 Schedules can be:
 - "at": One-shot at a specific ISO-8601 datetime
@@ -274,7 +369,7 @@ Schedules can be:
 
 The task runs independently in a new AI session. Results are delivered to this chat.`,
         {
-          action: z.enum(['list', 'add', 'update', 'remove', 'run'])
+          action: z.enum(['list', 'add', 'update', 'remove', 'run', 'runs', 'status', 'wake'])
             .describe('Action to perform'),
           job: z.object({
             name: z.string().optional().describe('Human-readable task name'),
@@ -283,8 +378,15 @@ The task runs independently in a new AI session. Results are delivered to this c
             sessionTarget: z.enum(['new_session', 'single_session']).optional()
               .describe('Whether to create a new session each time (default) or reuse one'),
           }).optional().describe('Required for "add" action'),
-          taskId: z.string().optional().describe('Task ID (required for update/remove/run)'),
-          patch: z.record(z.string(), z.any()).optional().describe('Fields to update (for "update" action)'),
+          taskId: z.string().optional().describe('Task ID (required for update/remove/run/runs)'),
+          patch: z.object({
+            name: z.string().optional().describe('New task name'),
+            message: z.string().optional().describe('New prompt/instruction text'),
+            schedule: scheduleSchema.optional().describe('New schedule'),
+            intervalMinutes: z.number().min(5).optional().describe('New interval in minutes'),
+          }).optional().describe('Fields to update (for "update" action). Use top-level keys, NOT nested inside "job".'),
+          limit: z.number().optional().describe('Max records to return (for "runs", default 20, max 100)'),
+          text: z.string().optional().describe('Optional text to inject as system event (for "wake")'),
         },
         imCronToolHandler,
       ),

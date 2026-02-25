@@ -14,13 +14,26 @@ use tokio::net::TcpListener;
 use crate::cron_task::{
     self, CronDelivery, CronSchedule, CronTask, CronTaskConfig, TaskProviderEnv,
 };
+use crate::im::{self, ManagedImBots};
 
 /// Global management API port (set once at startup)
 static MANAGEMENT_PORT: OnceLock<u16> = OnceLock::new();
 
+/// Global IM bots state (set once at startup for wake endpoint)
+static IM_BOTS_STATE: OnceLock<ManagedImBots> = OnceLock::new();
+
 /// Get the management API port (returns 0 if not started)
 pub fn get_management_port() -> u16 {
     MANAGEMENT_PORT.get().copied().unwrap_or(0)
+}
+
+/// Set the IM bots state for the management API (called once at startup)
+pub fn set_im_bots_state(bots: ManagedImBots) {
+    let _ = IM_BOTS_STATE.set(bots);
+}
+
+fn get_im_bots() -> Option<&'static ManagedImBots> {
+    IM_BOTS_STATE.get()
 }
 
 /// Start the internal management API server on a random port
@@ -44,7 +57,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cron/list", get(list_cron_handler))
         .route("/api/cron/update", post(update_cron_handler))
         .route("/api/cron/delete", post(delete_cron_handler))
-        .route("/api/cron/run", post(run_cron_handler));
+        .route("/api/cron/run", post(run_cron_handler))
+        .route("/api/cron/runs", get(runs_cron_handler))
+        .route("/api/cron/status", get(status_cron_handler))
+        .route("/api/im/wake", post(wake_bot_handler));
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -292,4 +308,109 @@ async fn run_cron_handler(
     }
 
     Json(ApiResponse { ok: true, error: None })
+}
+
+// ===== Runs / Status / Wake handlers =====
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunsQuery {
+    task_id: String,
+    limit: Option<usize>,
+}
+
+async fn runs_cron_handler(
+    Query(params): Query<RunsQuery>,
+) -> Json<serde_json::Value> {
+    let limit = params.limit.unwrap_or(20);
+    let runs = cron_task::read_cron_runs(&params.task_id, limit);
+    Json(serde_json::json!({ "ok": true, "runs": runs }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusQuery {
+    bot_id: String,
+}
+
+async fn status_cron_handler(
+    Query(params): Query<StatusQuery>,
+) -> Json<serde_json::Value> {
+    let manager = cron_task::get_cron_task_manager();
+    let tasks = manager.get_tasks_for_bot(&params.bot_id).await;
+
+    let total = tasks.len();
+    let running = tasks.iter().filter(|t| t.status == cron_task::TaskStatus::Running).count();
+    let last_executed = tasks.iter().filter_map(|t| t.last_executed_at).max();
+    let next_execution = tasks.iter().filter_map(|t| t.next_execution_at.clone()).min();
+
+    Json(serde_json::json!({
+        "ok": true,
+        "totalTasks": total,
+        "runningTasks": running,
+        "lastExecutedAt": last_executed,
+        "nextExecutionAt": next_execution,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WakeRequest {
+    bot_id: String,
+    text: Option<String>,
+}
+
+async fn wake_bot_handler(
+    Json(payload): Json<WakeRequest>,
+) -> Json<serde_json::Value> {
+    let bots = match get_im_bots() {
+        Some(b) => b,
+        None => return Json(serde_json::json!({ "ok": false, "error": "IM state not available" })),
+    };
+
+    // Extract Arc refs from instance, then drop bots_guard early to avoid
+    // holding the IM lock during potentially slow HTTP requests.
+    // (Same pattern as deliver_cron_result_to_bot in cron_task.rs)
+    let (router, wake_tx) = {
+        let bots_guard = bots.lock().await;
+        let instance = match bots_guard.get(&payload.bot_id) {
+            Some(i) => i,
+            None => return Json(serde_json::json!({ "ok": false, "error": "Bot not found" })),
+        };
+        (
+            std::sync::Arc::clone(&instance.router),
+            instance.heartbeat_wake_tx.clone(),
+        )
+    }; // bots_guard dropped here
+
+    // Step 1: If text provided, try to POST system event to Bot Sidecar
+    if let Some(ref text) = payload.text {
+        let port = {
+            let router_guard = router.lock().await;
+            router_guard.find_any_active_session().map(|(p, _, _)| p)
+        };
+
+        if let Some(port) = port {
+            let client = crate::local_http::builder().build().unwrap_or_default();
+            let body = serde_json::json!({
+                "event": "manual_wake",
+                "content": text,
+            });
+            let _ = client
+                .post(format!("http://127.0.0.1:{}/api/im/system-event", port))
+                .json(&body)
+                .send()
+                .await;
+        }
+    }
+
+    // Step 2: Send WakeReason::Manual to heartbeat runner
+    if let Some(ref wake_tx) = wake_tx {
+        match wake_tx.send(im::types::WakeReason::Manual).await {
+            Ok(_) => Json(serde_json::json!({ "ok": true })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("Wake failed: {}", e) })),
+        }
+    } else {
+        Json(serde_json::json!({ "ok": false, "error": "Heartbeat not configured for this bot" }))
+    }
 }

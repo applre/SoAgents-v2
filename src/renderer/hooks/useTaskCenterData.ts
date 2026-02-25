@@ -175,6 +175,14 @@ export function useTaskCenterData({ isActive }: UseTaskCenterDataOptions): TaskC
             });
             unlisteners.push(u2);
 
+            const u2b = await listen('cron:task-started', () => {
+                if (!mounted) return;
+                getAllCronTasks().then(tasks => {
+                    if (mounted) setCronTasks(tasks);
+                }).catch(() => {});
+            });
+            unlisteners.push(u2b);
+
             const u3 = await listen('cron:execution-complete', () => {
                 if (!mounted) return;
                 getAllCronTasks().then(tasks => {
@@ -237,8 +245,9 @@ export function useTaskCenterData({ isActive }: UseTaskCenterDataOptions): TaskC
         }
 
         // Build running cron task session set
+        // Use internalSessionId (actual SDK session) when available, falling back to sessionId
         const cronSessionIds = new Set(
-            cronTasks.filter(t => t.status === 'running').map(t => t.sessionId)
+            cronTasks.filter(t => t.status === 'running').map(t => t.internalSessionId || t.sessionId)
         );
 
         // Build background session set

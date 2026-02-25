@@ -3025,15 +3025,26 @@ export async function enqueueUserMessage(
   // Persist session to SessionStore on first message
   if (!hasInitialPrompt) {
     hasInitialPrompt = true;
-    // Create and save session metadata
-    const sessionMeta = createSessionMetadata(agentDir);
-    sessionMeta.id = sessionId; // Use existing sessionId
-    sessionMeta.title = trimmed ? trimmed.slice(0, 40) : '图片消息';
-    if (sessionMeta.title.length < trimmed.length) {
-      sessionMeta.title += '...';
+    // Check if session metadata already exists (e.g., IM Bot session reloaded after Sidecar restart)
+    const existingMeta = getSessionMetadata(sessionId);
+    if (existingMeta) {
+      // Session already in index — only update title if it's still default
+      const title = trimmed ? trimmed.slice(0, 40) + (trimmed.length > 40 ? '...' : '') : '图片消息';
+      if (existingMeta.title === 'New Chat') {
+        updateSessionMetadata(sessionId, { title });
+      }
+      console.log(`[agent] session ${sessionId} already exists in SessionStore, preserving stats`);
+    } else {
+      // Brand new session — create metadata
+      const sessionMeta = createSessionMetadata(agentDir);
+      sessionMeta.id = sessionId;
+      sessionMeta.title = trimmed ? trimmed.slice(0, 40) : '图片消息';
+      if (sessionMeta.title.length < trimmed.length) {
+        sessionMeta.title += '...';
+      }
+      saveSessionMetadata(sessionMeta);
+      console.log(`[agent] session ${sessionId} persisted to SessionStore`);
     }
-    saveSessionMetadata(sessionMeta);
-    console.log(`[agent] session ${sessionId} persisted to SessionStore`);
   } else {
     // Update session title from first real message if needed
     if (trimmed && messages.length === 0) {

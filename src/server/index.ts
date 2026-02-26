@@ -4252,6 +4252,8 @@ async function main() {
             // Write content to new location
             writeFileSync(cmdPath, content, 'utf-8');
 
+            // User command renamed — re-sync to fix old dangling symlink + create new one
+            if (payload.scope === 'user' && agentDir) syncProjectSkills(agentDir);
             return jsonResponse({
               success: true,
               path: cmdPath,
@@ -4297,6 +4299,8 @@ async function main() {
           }
 
           rmSync(cmdPath);
+          // User command deleted — re-sync to remove dangling symlinks in project
+          if (scope === 'user' && agentDir) syncProjectSkills(agentDir);
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/command-item] Error:', error);
@@ -4345,6 +4349,8 @@ async function main() {
 
           writeFileSync(cmdPath, content, 'utf-8');
 
+          // New user command — sync symlink into project so SDK can discover it
+          if (payload.scope === 'user' && agentDir) syncProjectSkills(agentDir);
           return jsonResponse({ success: true, path: cmdPath, name: fileName });
         } catch (error) {
           console.error('[api/command-item/create] Error:', error);

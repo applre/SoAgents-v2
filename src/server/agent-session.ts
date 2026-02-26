@@ -49,97 +49,149 @@ export function getMyAgentsUserDir(): string {
 }
 
 /**
- * Sync enabled user-level skills into a project's .claude/skills/ as symlinks.
+ * Sync user-level skills and commands into a project's .claude/ as symlinks.
  *
- * The SDK has no API to filter skills — it reads ALL folders from settingSources paths.
- * We use settingSources: ['project'] (reads from <cwd>/.claude/) and sync enabled
- * user-level skills as symlinks into the project's .claude/skills/ directory.
+ * The SDK has no API to filter skills/commands — it reads ALL entries from settingSources paths.
+ * We use settingSources: ['project'] (reads from <cwd>/.claude/) and sync user-level
+ * skills/commands as symlinks into the project's .claude/skills/ and .claude/commands/.
  *
  * This avoids setting CLAUDE_CONFIG_DIR (which would break Keychain credential lookup).
  *
- * Behavior:
- * - Creates symlinks for enabled skills: <agentDir>/.claude/skills/<name> → ~/.myagents/skills/<name>
+ * Skills (directories):
+ * - Creates symlinks for enabled skills: <project>/.claude/skills/<name> → ~/.myagents/skills/<name>
  * - Removes symlinks for disabled skills (only symlinks, never real project directories)
  * - Does NOT touch real (non-symlink) skill directories in the project
  *
- * Called at session startup (startStreamingSession) and after skill CRUD operations.
+ * Commands (.md files):
+ * - Creates symlinks for all commands: <project>/.claude/commands/<name>.md → ~/.myagents/commands/<name>.md
+ * - Does NOT touch real (non-symlink) command files in the project
+ *
+ * Called at session startup (startStreamingSession) and after skill/command CRUD operations.
  */
 export function syncProjectSkills(projectDir: string): void {
   const myagentsDir = getMyAgentsUserDir();
+  const isWin = process.platform === 'win32';
+
+  // ===== SKILLS SYNC =====
   const userSkillsDir = join(myagentsDir, 'skills');
   const projectSkillsDir = join(projectDir, '.claude', 'skills');
 
-  // No user skills to sync
-  if (!existsSync(userSkillsDir)) return;
+  if (existsSync(userSkillsDir)) {
+    mkdirSync(projectSkillsDir, { recursive: true });
 
-  // Ensure project .claude/skills/ exists
-  mkdirSync(projectSkillsDir, { recursive: true });
-
-  // Read disabled list from skills-config.json
-  let disabled: string[] = [];
-  try {
-    const configPath = join(myagentsDir, 'skills-config.json');
-    if (existsSync(configPath)) {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      disabled = Array.isArray(raw?.disabled) ? raw.disabled : [];
-    }
-  } catch {
-    // Ignore read errors — treat all skills as enabled
-  }
-
-  const isWin = process.platform === 'win32';
-  // Track which skill names we manage (enabled or disabled) so we can detect dangling symlinks
-  const managedSkillNames = new Set<string>();
-
-  for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (entry.name.startsWith('.')) continue;
-
-    managedSkillNames.add(entry.name);
-    const linkPath = join(projectSkillsDir, entry.name);
-    const target = join(userSkillsDir, entry.name);
-
-    if (disabled.includes(entry.name)) {
-      // Disabled: remove symlink if we created one (never remove real dirs)
-      try {
-        if (existsSync(linkPath) && lstatSync(linkPath).isSymbolicLink()) {
-          rmSync(linkPath);
-        }
-      } catch { /* ignore */ }
-      continue;
-    }
-
-    // Skip if a real (non-symlink) directory exists — don't overwrite project skills
+    // Read disabled list from skills-config.json
+    let disabled: string[] = [];
     try {
-      if (existsSync(linkPath)) {
-        if (!lstatSync(linkPath).isSymbolicLink()) continue; // real dir, skip
-        rmSync(linkPath); // stale symlink, recreate
+      const configPath = join(myagentsDir, 'skills-config.json');
+      if (existsSync(configPath)) {
+        const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+        disabled = Array.isArray(raw?.disabled) ? raw.disabled : [];
       }
-    } catch { /* doesn't exist, create it */ }
-
-    try {
-      symlinkSync(target, linkPath, isWin ? 'junction' : undefined);
-    } catch (err) {
-      console.warn(`[skill-sync] Failed to symlink skill ${entry.name}:`, err);
+    } catch {
+      // Ignore read errors — treat all skills as enabled
     }
+
+    // Track which skill names we manage (enabled or disabled) so we can detect dangling symlinks
+    const managedSkillNames = new Set<string>();
+
+    for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.')) continue;
+
+      managedSkillNames.add(entry.name);
+      const linkPath = join(projectSkillsDir, entry.name);
+      const target = join(userSkillsDir, entry.name);
+
+      if (disabled.includes(entry.name)) {
+        // Disabled: remove symlink if we created one (never remove real dirs)
+        try {
+          if (existsSync(linkPath) && lstatSync(linkPath).isSymbolicLink()) {
+            rmSync(linkPath);
+          }
+        } catch { /* ignore */ }
+        continue;
+      }
+
+      // Skip if a real (non-symlink) directory exists — don't overwrite project skills
+      try {
+        if (existsSync(linkPath)) {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue; // real dir, skip
+          rmSync(linkPath); // stale symlink, recreate
+        }
+      } catch { /* doesn't exist, create it */ }
+
+      try {
+        symlinkSync(target, linkPath, isWin ? 'junction' : undefined);
+      } catch (err) {
+        console.warn(`[skill-sync] Failed to symlink skill ${entry.name}:`, err);
+      }
+    }
+
+    // Cleanup: remove dangling symlinks left by deleted/renamed user skills
+    // Only removes symlinks pointing into our userSkillsDir — never touches real project dirs
+    try {
+      for (const entry of readdirSync(projectSkillsDir, { withFileTypes: true })) {
+        const linkPath = join(projectSkillsDir, entry.name);
+        try {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue;
+          const target = readlinkSync(linkPath);
+          const resolvedTarget = resolve(projectSkillsDir, target);
+          if (resolvedTarget.startsWith(userSkillsDir + sep) && !managedSkillNames.has(entry.name)) {
+            rmSync(linkPath);
+          }
+        } catch { /* ignore individual errors */ }
+      }
+    } catch { /* ignore — projectSkillsDir may have been removed externally */ }
   }
 
-  // Cleanup: remove dangling symlinks left by deleted/renamed user skills
-  // Only removes symlinks pointing into our userSkillsDir — never touches real project dirs
-  try {
-    for (const entry of readdirSync(projectSkillsDir, { withFileTypes: true })) {
-      const linkPath = join(projectSkillsDir, entry.name);
+  // ===== COMMANDS SYNC =====
+  const userCommandsDir = join(myagentsDir, 'commands');
+  const projectCommandsDir = join(projectDir, '.claude', 'commands');
+
+  if (existsSync(userCommandsDir)) {
+    mkdirSync(projectCommandsDir, { recursive: true });
+
+    // Track managed command filenames for dangling symlink cleanup
+    const managedCommandFiles = new Set<string>();
+
+    for (const entry of readdirSync(userCommandsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      if (entry.name.startsWith('.')) continue;
+
+      managedCommandFiles.add(entry.name);
+      const linkPath = join(projectCommandsDir, entry.name);
+      const target = join(userCommandsDir, entry.name);
+
+      // Skip if a real (non-symlink) file exists — don't overwrite project commands
       try {
-        if (!lstatSync(linkPath).isSymbolicLink()) continue; // real dir, skip
-        const target = readlinkSync(linkPath);
-        // Only clean up symlinks that point into our user skills directory
-        const resolvedTarget = resolve(projectSkillsDir, target);
-        if (resolvedTarget.startsWith(userSkillsDir + sep) && !managedSkillNames.has(entry.name)) {
-          rmSync(linkPath);
+        if (existsSync(linkPath)) {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue; // real file, skip
+          rmSync(linkPath); // stale symlink, recreate
         }
-      } catch { /* ignore individual errors */ }
+      } catch { /* doesn't exist, create it */ }
+
+      try {
+        symlinkSync(target, linkPath);
+      } catch (err) {
+        console.warn(`[command-sync] Failed to symlink command ${entry.name}:`, err);
+      }
     }
-  } catch { /* ignore — projectSkillsDir may have been removed externally */ }
+
+    // Cleanup: remove dangling symlinks left by deleted/renamed user commands
+    try {
+      for (const entry of readdirSync(projectCommandsDir, { withFileTypes: true })) {
+        const linkPath = join(projectCommandsDir, entry.name);
+        try {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue;
+          const target = readlinkSync(linkPath);
+          const resolvedTarget = resolve(projectCommandsDir, target);
+          if (resolvedTarget.startsWith(userCommandsDir + sep) && !managedCommandFiles.has(entry.name)) {
+            rmSync(linkPath);
+          }
+        } catch { /* ignore individual errors */ }
+      }
+    } catch { /* ignore */ }
+  }
 }
 
 type SessionState = 'idle' | 'running' | 'error';
@@ -483,6 +535,8 @@ let currentTurnUsage = {
 let currentTurnStartTime: number | null = null;
 // Tool count for current turn
 let currentTurnToolCount = 0;
+// Whether the current turn produced any visible assistant text output
+let currentTurnHasOutput = false;
 
 function resetTurnUsage(): void {
   currentTurnUsage = {
@@ -495,6 +549,7 @@ function resetTurnUsage(): void {
   };
   currentTurnStartTime = null;
   currentTurnToolCount = 0;
+  currentTurnHasOutput = false;
 }
 
 // ===== MCP Configuration =====
@@ -3901,6 +3956,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!decorativeCheck.filtered) {
                   broadcast('chat:message-chunk', streamEvent.delta.text);
                   appendTextChunk(streamEvent.delta.text);
+                  currentTurnHasOutput = true;
                   // IM stream: forward non-subagent text delta
                   imStreamCallback?.('delta', streamEvent.delta.text);
                 } else {
@@ -4346,12 +4402,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
 
         // Surface SDK-level errors that produced no assistant output (e.g. "Unknown skill: xxx").
-        // These results have 0 API tokens and non-empty result text, but is_error may be false.
+        // These results have non-empty result text but no visible assistant text was streamed.
         // Without this, the user sees nothing — the message just silently completes.
+        // Note: Cannot rely on modelUsage — it accumulates across persistent session turns.
         const resultText = resultMessage.result || '';
-        const hadNoOutput = (resultMessage.usage?.output_tokens === 0 || !resultMessage.usage)
-          && Object.keys(resultMessage.modelUsage || {}).length === 0;
-        if (resultText && hadNoOutput && !currentTurnToolCount) {
+        if (resultText && !currentTurnHasOutput && !currentTurnToolCount) {
           console.warn('[agent] SDK returned result with no API output, surfacing to user:', resultText);
           broadcast('chat:message-chunk', resultText);
           // Also forward to IM callback (prevents "(No Response)" for non-is_error SDK failures)

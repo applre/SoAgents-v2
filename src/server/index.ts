@@ -2828,7 +2828,7 @@ async function main() {
 
               // Helper: abort the underlying connection to prevent resource leaks
               // (especially important for SSE — the response is an infinite stream).
-              const cleanup = () => { try { controller.abort(); } catch {} };
+              const cleanup = () => { try { controller.abort(); } catch { /* ignore abort errors */ } };
 
               // Check HTTP status
               if (response.status === 401 || response.status === 403) {
@@ -3602,6 +3602,8 @@ async function main() {
             }
           }
 
+          // Imported user skills — sync symlinks into project
+          if (synced > 0 && agentDir) syncProjectSkills(agentDir);
           return jsonResponse({
             success: true,
             synced,
@@ -3714,6 +3716,8 @@ async function main() {
             // Write content to new location
             writeFileSync(skillPath, content, 'utf-8');
 
+            // User skill renamed — re-sync to fix old dangling symlink + create new one
+            if (payload.scope === 'user' && agentDir) syncProjectSkills(agentDir);
             return jsonResponse({
               success: true,
               path: skillPath,
@@ -3761,6 +3765,8 @@ async function main() {
           }
 
           rmSync(skillDir, { recursive: true, force: true });
+          // User skill deleted — re-sync to remove dangling symlinks in project
+          if (scope === 'user' && agentDir) syncProjectSkills(agentDir);
           return jsonResponse({ success: true });
         } catch (error) {
           console.error('[api/skill] Error:', error);
@@ -3810,68 +3816,13 @@ async function main() {
           const skillPath = join(skillDir, 'SKILL.md');
           writeFileSync(skillPath, content, 'utf-8');
 
+          // New user skill — sync symlink into project so SDK can discover it
+          if (payload.scope === 'user' && agentDir) syncProjectSkills(agentDir);
           return jsonResponse({ success: true, path: skillPath, folderName });
         } catch (error) {
           console.error('[api/skill/create] Error:', error);
           return jsonResponse(
             { success: false, error: error instanceof Error ? error.message : 'Failed to create skill' },
-            500
-          );
-        }
-      }
-
-      // POST /api/skill/copy - Copy user-level skill to project directory
-      // This is needed because SDK only reads skills from <project>/.claude/skills/
-      if (pathname === '/api/skill/copy' && request.method === 'POST') {
-        try {
-          const payload = await request.json() as {
-            skillName: string;
-            agentDir: string;
-          };
-
-          if (!payload.skillName || !payload.agentDir) {
-            return jsonResponse({ success: false, error: 'skillName and agentDir are required' }, 400);
-          }
-
-          // Security: Validate skillName doesn't contain path traversal characters
-          if (payload.skillName.includes('/') || payload.skillName.includes('\\') || payload.skillName.includes('..')) {
-            return jsonResponse({ success: false, error: 'Invalid skill name: path traversal not allowed' }, 400);
-          }
-
-          // Security: Validate agentDir is a valid directory
-          const resolvedAgentDir = resolve(payload.agentDir);
-          if (!existsSync(resolvedAgentDir) || !statSync(resolvedAgentDir).isDirectory()) {
-            return jsonResponse({ success: false, error: 'Invalid agent directory' }, 400);
-          }
-
-          const srcDir = join(userSkillsBaseDir, payload.skillName);
-          const destBaseDir = join(resolvedAgentDir, '.claude', 'skills');
-          const destDir = join(destBaseDir, payload.skillName);
-
-          // Validate source exists and is a directory
-          if (!existsSync(srcDir) || !statSync(srcDir).isDirectory()) {
-            return jsonResponse({ success: false, error: `User skill "${payload.skillName}" not found` }, 404);
-          }
-
-          // Check if already exists in project
-          if (existsSync(destDir)) {
-            return jsonResponse({ success: true, alreadyExists: true, message: 'Skill already exists in project' });
-          }
-
-          // Create destination directory structure
-          mkdirSync(destBaseDir, { recursive: true });
-
-          // Copy the skill directory using shared utility
-          copyDirRecursiveSync(srcDir, destDir, '[api/skill/copy]');
-
-          if (process.env.DEBUG === '1') {
-            console.log(`[api/skill/copy] Copied skill "${payload.skillName}" to ${destDir}`);
-          }
-          return jsonResponse({ success: true, path: destDir });
-        } catch (error) {
-          console.error('[api/skill/copy] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to copy skill' },
             500
           );
         }

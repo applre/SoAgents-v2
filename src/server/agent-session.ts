@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readFileSync, rmSync } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readFileSync, readlinkSync, rmSync } from 'fs';
+import { join, resolve, sep } from 'path';
 import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { getScriptDir, getBundledBunDir } from './utils/runtime';
@@ -62,7 +62,7 @@ export function getMyAgentsUserDir(): string {
  * - Removes symlinks for disabled skills (only symlinks, never real project directories)
  * - Does NOT touch real (non-symlink) skill directories in the project
  *
- * Called at session startup (startStreamingSession).
+ * Called at session startup (startStreamingSession) and after skill CRUD operations.
  */
 export function syncProjectSkills(projectDir: string): void {
   const myagentsDir = getMyAgentsUserDir();
@@ -87,14 +87,15 @@ export function syncProjectSkills(projectDir: string): void {
     // Ignore read errors — treat all skills as enabled
   }
 
-  // Collect enabled skill names for cleanup phase
-  const enabledSkillNames = new Set<string>();
   const isWin = process.platform === 'win32';
+  // Track which skill names we manage (enabled or disabled) so we can detect dangling symlinks
+  const managedSkillNames = new Set<string>();
 
   for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith('.')) continue;
 
+    managedSkillNames.add(entry.name);
     const linkPath = join(projectSkillsDir, entry.name);
     const target = join(userSkillsDir, entry.name);
 
@@ -107,8 +108,6 @@ export function syncProjectSkills(projectDir: string): void {
       } catch { /* ignore */ }
       continue;
     }
-
-    enabledSkillNames.add(entry.name);
 
     // Skip if a real (non-symlink) directory exists — don't overwrite project skills
     try {
@@ -124,6 +123,23 @@ export function syncProjectSkills(projectDir: string): void {
       console.warn(`[skill-sync] Failed to symlink skill ${entry.name}:`, err);
     }
   }
+
+  // Cleanup: remove dangling symlinks left by deleted/renamed user skills
+  // Only removes symlinks pointing into our userSkillsDir — never touches real project dirs
+  try {
+    for (const entry of readdirSync(projectSkillsDir, { withFileTypes: true })) {
+      const linkPath = join(projectSkillsDir, entry.name);
+      try {
+        if (!lstatSync(linkPath).isSymbolicLink()) continue; // real dir, skip
+        const target = readlinkSync(linkPath);
+        // Only clean up symlinks that point into our user skills directory
+        const resolvedTarget = resolve(projectSkillsDir, target);
+        if (resolvedTarget.startsWith(userSkillsDir + sep) && !managedSkillNames.has(entry.name)) {
+          rmSync(linkPath);
+        }
+      } catch { /* ignore individual errors */ }
+    }
+  } catch { /* ignore — projectSkillsDir may have been removed externally */ }
 }
 
 type SessionState = 'idle' | 'running' | 'error';

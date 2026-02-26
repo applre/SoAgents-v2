@@ -271,10 +271,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     [slashCommands, slashSearchQuery]
   );
 
-  // Pending user-level skill copies (SDK only reads from project .claude/skills/)
-  // Use Map to track multiple concurrent copy operations and avoid race conditions
-  const pendingSkillCopiesRef = useRef<Map<string, Promise<boolean>>>(new Map());
-
   // Guard against double-fire of handleSend (e.g. rapid Enter + click)
   const sendingRef = useRef(false);
 
@@ -375,50 +371,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     return () => window.removeEventListener(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, handleSkillCopied);
   }, [fetchCommands]);
 
-  // Copy user-level skill to project directory (SDK only reads from <project>/.claude/skills/)
-  const triggerSkillCopy = useCallback((skillName: string) => {
-    if (!apiPost || !agentDir) return;
-
-    // Skip if already copying this skill (avoid duplicate requests)
-    if (pendingSkillCopiesRef.current.has(skillName)) return;
-
-    const copyPromise = (async (): Promise<boolean> => {
-      try {
-        const response = await apiPost<{ success: boolean; alreadyExists?: boolean; error?: string }>(
-          '/api/skill/copy',
-          { skillName, agentDir }
-        );
-        if (response.success) {
-          if (!response.alreadyExists) {
-            toastRef.current.success(`已将 skill "${skillName}" 添加到本项目`);
-          }
-          // Notify workspace config panel to refresh (if open)
-          window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SKILL_COPIED_TO_PROJECT, { detail: { skillName } }));
-          return true;
-        } else {
-          toastRef.current.warning(response.error || `复制 skill "${skillName}" 失败`);
-          return false;
-        }
-      } catch (err) {
-        console.error('[skill-copy] Error:', err);
-        toastRef.current.warning(`复制 skill "${skillName}" 失败`);
-        return false;
-      } finally {
-        // Clean up after completion
-        pendingSkillCopiesRef.current.delete(skillName);
-      }
-    })();
-
-    pendingSkillCopiesRef.current.set(skillName, copyPromise);
-  }, [apiPost, agentDir]);
-
   // Handle user-level skill selection
-  // NOTE: Skill copy is no longer needed — SDK natively reads user-level skills
-  // from ~/.myagents/skills/ via CLAUDE_CONFIG_DIR + settingSources: ['user', 'project'].
-  // The copy mechanism is preserved in code but disabled to avoid polluting project directories.
-  const handleSkillSelect = useCallback((_cmd: SlashCommand) => {
-    // No-op: SDK reads user skills natively, no need to copy to .claude/skills/
-  }, []);
+  // No-op: user-level skills are synced as symlinks into project .claude/skills/
+  // by syncProjectSkills() at session startup. No per-invocation copy needed.
+  const handleSkillSelect = useCallback((_cmd: SlashCommand) => {}, []);
 
   // Validate and add image (resize is handled server-side in enqueueUserMessage)
   const addImage = useCallback((file: File) => {
@@ -960,26 +916,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     sendingRef.current = true;
 
     try {
-      // Wait for all pending skill copies to complete (max 10s each)
-      const pendingCopies = Array.from(pendingSkillCopiesRef.current.entries());
-      if (pendingCopies.length > 0) {
-        for (const [skillName, promise] of pendingCopies) {
-          try {
-            const timeoutPromise = new Promise<boolean>((_, reject) =>
-              setTimeout(() => reject(new Error('timeout')), 10000)
-            );
-            const success = await Promise.race([promise, timeoutPromise]);
-            if (!success) {
-              toastRef.current.warning(`Skill "${skillName}" 复制失败，请重试`);
-              return;
-            }
-          } catch {
-            toastRef.current.warning(`Skill "${skillName}" 复制超时，请重试`);
-            return;
-          }
-        }
-      }
-
       const result = onSend(text, images.length > 0 ? images : undefined);
       // If onSend returns a promise, await it; if sync, use directly
       const accepted = result instanceof Promise ? await result : result;

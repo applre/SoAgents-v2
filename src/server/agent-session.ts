@@ -29,6 +29,10 @@ const DECORATIVE_TEXT_MAX_LENGTH = 5000;
 // Our product (MyAgents) uses ~/.myagents/ for user configuration
 // This is SEPARATE from Claude CLI's ~/.claude/ directory
 // Only subscription-related features may access ~/.claude/ (handled by SDK internally)
+//
+// IMPORTANT: CLAUDE_CONFIG_DIR is set to ~/.myagents/ (see buildClaudeSessionEnv).
+// The SDK will read ~/.myagents/settings.json if it exists, auto-discovering MCP servers etc.
+// Do NOT create settings.json here — MyAgents manages MCP explicitly via config.json + mcpServers option.
 const MYAGENTS_USER_DIR = '.myagents';
 
 /**
@@ -711,23 +715,20 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
  * Build SDK settingSources
  *
  * settingSources controls where SDK reads settings from:
- * - 'user': ~/.claude/ (Claude CLI's user directory)
+ * - 'user': reads from CLAUDE_CONFIG_DIR (we set it to ~/.myagents/)
  * - 'project': <cwd>/.claude/ (project-level config)
  *
- * We use 'project' only:
- * - Enables SDK to read project's .claude/skills/, .claude/commands/, CLAUDE.md
- * - Project-level MCP in .claude/ will also be discovered (acceptable - it's project config)
+ * We use both 'user' and 'project':
+ * - 'user': enables SDK to natively read user-level skills/commands from ~/.myagents/skills/
+ *   (via CLAUDE_CONFIG_DIR env var redirecting from ~/.claude/ to ~/.myagents/)
+ * - 'project': enables SDK to read project's .claude/skills/, .claude/commands/, CLAUDE.md
  *
- * We exclude 'user' because:
- * - ~/.claude/ is Claude CLI's directory, not our product's directory
- * - Our product (MyAgents) uses ~/.myagents/ for user-level config
- * - We manage additional MCP explicitly via mcpServers option
+ * CLAUDE_CONFIG_DIR is set in buildClaudeSessionEnv() to redirect the SDK's user config
+ * directory from ~/.claude/ to ~/.myagents/. This avoids conflicting with Claude CLI's
+ * own directory and eliminates the need for the skill copy workaround.
  */
 function buildSettingSources(): ('user' | 'project')[] {
-  // Always use 'project' to enable SDK reading from <cwd>/.claude/
-  // This is required for: skills, commands, CLAUDE.md, project settings
-  // Note: Project-level MCP in .claude/ will also be discovered (acceptable)
-  return ['project'];
+  return ['user', 'project'];
 }
 
 // Known MCP package versions — pin these to avoid npm registry lookups on every startup
@@ -1647,6 +1648,11 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     // MyAgents manages its own telemetry; these external connections add startup latency
     // and can timeout in restricted network environments (e.g. China).
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    // Redirect SDK's user config directory from ~/.claude/ to ~/.myagents/
+    // This makes settingSources: ['user'] read skills/commands from ~/.myagents/skills/
+    // instead of ~/.claude/skills/, keeping our config separate from Claude CLI.
+    // The SDK's DA()/U9() function uses: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
+    CLAUDE_CONFIG_DIR: getMyAgentsUserDir(),
   };
 
   // Use provided providerEnv or fall back to currentProviderEnv
@@ -3504,9 +3510,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const commonQueryOptions = {
       enableFileCheckpointing: true,
       maxThinkingTokens: 32_000,
-      // Only use project-level settings from .claude/ directory
-      // We don't use 'user' (~/.claude/) because our config is in ~/.myagents/
-      // MCP is explicitly configured via mcpServers, not SDK auto-discovery
+      // Load settings from both user (~/.myagents/ via CLAUDE_CONFIG_DIR) and project (.claude/)
+      // User-level: skills, commands from ~/.myagents/skills/, ~/.myagents/commands/
+      // Project-level: skills, commands, CLAUDE.md from <cwd>/.claude/
       settingSources: buildSettingSources(),
       // Permission mode mapping (uses mapToSdkPermissionMode):
       // - auto → acceptEdits (auto-accept edits, check others via canUseTool)
@@ -4237,6 +4243,22 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             const errorText = localizeImError(rawError);
             console.warn('[agent] SDK result is_error, forwarding to IM:', errorText);
             imStreamCallback('error', errorText);
+            imStreamCallback = null;
+          }
+        }
+
+        // Surface SDK-level errors that produced no assistant output (e.g. "Unknown skill: xxx").
+        // These results have 0 API tokens and non-empty result text, but is_error may be false.
+        // Without this, the user sees nothing — the message just silently completes.
+        const resultText = resultMessage.result || '';
+        const hadNoOutput = (resultMessage.usage?.output_tokens === 0 || !resultMessage.usage)
+          && Object.keys(resultMessage.modelUsage || {}).length === 0;
+        if (resultText && hadNoOutput && !currentTurnToolCount) {
+          console.warn('[agent] SDK returned result with no API output, surfacing to user:', resultText);
+          broadcast('chat:message-chunk', resultText);
+          // Also forward to IM callback (prevents "(No Response)" for non-is_error SDK failures)
+          if (imStreamCallback) {
+            imStreamCallback('complete', resultText);
             imStreamCallback = null;
           }
         }

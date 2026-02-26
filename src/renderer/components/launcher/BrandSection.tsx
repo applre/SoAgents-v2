@@ -67,7 +67,7 @@ export default memo(function BrandSection({
     }, [onSend]);
 
     return (
-        <section className="flex flex-1 flex-col items-center px-12">
+        <section data-onboarding-id="brand-section" className="flex flex-1 flex-col items-center px-12">
             {/* Upper area: Brand Name + Slogans */}
             <div className="flex flex-1 flex-col items-center justify-center">
                 <h1 className="brand-title mb-5 text-[2.75rem] font-light tracking-[0.04em] text-[var(--ink)] md:text-[3.5rem]">
@@ -80,7 +80,7 @@ export default memo(function BrandSection({
 
             {/* Lower area: Input box with workspace selector in toolbar */}
             <div className="mt-10 w-full max-w-[640px] pb-[12vh]">
-                <div className="relative w-full">
+                <div data-onboarding-id="instruction-input" className="relative w-full">
                     <SimpleChatInput
                         mode="launcher"
                         onSend={handleSend}

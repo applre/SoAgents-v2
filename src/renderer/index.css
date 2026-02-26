@@ -56,6 +56,22 @@
   }
 }
 
+/* Onboarding tooltip zoom-in animation */
+@keyframes onboarding-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-onboarding-appear {
+  animation: onboarding-appear 0.2s ease-out forwards;
+}
+
 /* Scroll anchoring for smoother streaming experience */
 .scroll-anchor-auto {
   overflow-anchor: auto;

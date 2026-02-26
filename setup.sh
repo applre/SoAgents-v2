@@ -124,6 +124,13 @@ cd ..
 echo -e "${GREEN}✓ Rust 依赖准备完成${NC}"
 echo ""
 
+# 创建 Tauri 占位符资源 (tauri dev 需要，否则 build 失败)
+echo -e "${BLUE}[4.5/6] 创建 Tauri 占位符资源${NC}"
+mkdir -p "${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk"
+echo "// dev placeholder" > "${PROJECT_DIR}/src-tauri/resources/server-dist.js"
+echo -e "${GREEN}✓ 占位符资源已创建${NC}"
+echo ""
+
 # 准备默认工作区 (mino) — 每次拉取最新版本
 # .git 不保留：避免 Tauri 资源打包权限问题 + rerun-if-changed 性能问题
 echo -e "${BLUE}[5/6] 准备默认工作区 (mino)${NC}"

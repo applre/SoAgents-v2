@@ -212,6 +212,20 @@ export interface ProxySettings {
 }
 
 /**
+ * Onboarding progress tracking (stored in AppConfig)
+ * undefined = first launch, will show onboarding
+ */
+export interface OnboardingProgress {
+  completed: boolean;
+  skipped: boolean;
+  currentStep: number;  // 0-3: api-key, workspace, brand, instruction
+  visitedPages: {
+    settings: boolean;
+    launcher: boolean;
+  };
+}
+
+/**
  * App-level configuration
  */
 export interface AppConfig {
@@ -277,6 +291,10 @@ export interface AppConfig {
    *  Written by rebuildAndPersistAvailableProviders() whenever provider config changes.
    *  Read lazily by Rust IM command handlers. */
   availableProvidersJson?: string;
+
+  // ===== Onboarding =====
+  // undefined = first launch (show onboarding); set after first run
+  onboarding?: OnboardingProgress;
 }
 
 /**

@@ -37,6 +37,7 @@ import {
     touchProject as touchProjectService,
 } from './services/projectService';
 import { isTauriEnvironment } from '@/utils/browserMock';
+import { CUSTOM_EVENTS } from '../../shared/constants';
 
 // ============= Context Types =============
 
@@ -261,6 +262,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         await saveApiKeyService(providerId, apiKey);
         setApiKeys((prev) => ({ ...prev, [providerId]: apiKey }));
         await rebuildAndPersistAvailableProviders();
+        window.dispatchEvent(new Event(CUSTOM_EVENTS.CONFIG_CHANGED));
     }, []);
 
     const deleteApiKey = useCallback(async (providerId: string) => {

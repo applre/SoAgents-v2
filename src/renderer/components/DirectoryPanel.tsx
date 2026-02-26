@@ -35,6 +35,7 @@ import ConfirmDialog from './ConfirmDialog';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu';
 import RenameDialog from './RenameDialog';
 import AgentCapabilitiesPanel from './AgentCapabilitiesPanel';
+import WorkspaceChangesPanel from './WorkspaceChangesPanel';
 import type { Tab as WorkspaceTab } from './WorkspaceConfigPanel';
 
 // Lazy load FilePreviewModal - it includes heavy SyntaxHighlighter
@@ -162,6 +163,8 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
   // Narrow mode collapse state (for responsive layout)
   const [isNarrowMode, setIsNarrowMode] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(true); // Default collapsed in narrow mode
+  const [activeTab, setActiveTab] = useState<'files' | 'changes'>('files');
+  const [pendingCount, setPendingCount] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Detect narrow mode (when panel becomes full width, i.e. stacked layout)
@@ -1038,6 +1041,36 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
             />
           </div>
 
+          {/* Tab bar: Files / Changes */}
+          <div className="flex border-b border-[var(--line)] shrink-0">
+            <button
+              onClick={() => setActiveTab('files')}
+              className={`flex items-center gap-1 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'files'
+                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]'
+              }`}
+            >
+              📁 Files
+            </button>
+            <button
+              onClick={() => setActiveTab('changes')}
+              className={`flex items-center gap-1 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'changes'
+                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]'
+              }`}
+            >
+              🔄 Changes{pendingCount > 0 && (
+                <span className="ml-1 bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 text-xs rounded-full px-1.5 py-0.5">
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {activeTab === 'files' ? (
+          <>
           {/* Tree + Capabilities container (60/40 split) */}
           <div className="flex min-h-0 flex-1 flex-col">
             {/* Tree container */}
@@ -1227,6 +1260,15 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
               onExpandChange={updateTreeHeight}
             />
           </div>
+          </>
+          ) : (
+            <WorkspaceChangesPanel
+              agentDir={agentDir}
+              refreshTrigger={refreshTrigger}
+              onPendingCountChange={setPendingCount}
+              onFilesChanged={refresh}
+            />
+          )}
         </>
       )}
 

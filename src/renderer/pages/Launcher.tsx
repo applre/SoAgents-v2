@@ -235,6 +235,8 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
             },
         }).catch(err => console.warn('[Launcher] Failed to save launcherLastUsed:', err));
 
+        // Notify onboarding that first instruction was submitted
+        window.dispatchEvent(new CustomEvent('onboarding:instruction-submitted'));
         setLaunchingProjectId(selectedWorkspace.id);
         touchProject(selectedWorkspace.id).catch(() => {});
         onLaunchProject(selectedWorkspace, launcherProvider, undefined, initialMessage);
@@ -342,6 +344,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     console.log('[Launcher] Adding project:', selected);
                     const project = await addProject(selected);
                     console.log('[Launcher] Project added:', project);
+                    window.dispatchEvent(new CustomEvent('onboarding:workspace-added'));
                 } else {
                     console.log('[Launcher] No folder selected or dialog cancelled');
                 }
@@ -361,6 +364,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         try {
             const project = await addProject(path);
             console.log('[Launcher] Project added:', project);
+            window.dispatchEvent(new CustomEvent('onboarding:workspace-added'));
             // Normalize path separators for cross-platform support
             const normalizedPath = path.replace(/\\/g, '/');
             const parentDir = normalizedPath.split('/').slice(0, -1).join('/');
@@ -481,6 +485,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                             )}
                             {projects.length > 0 && (
                                 <button
+                                    data-onboarding-id="add-workspace"
                                     onClick={handleAddProject}
                                     className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]"
                                 >
@@ -510,6 +515,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                                     添加一个工作目录开始使用 Agent
                                 </p>
                                 <button
+                                    data-onboarding-id="add-workspace"
                                     onClick={handleAddProject}
                                     className="flex items-center gap-1.5 rounded-full bg-[var(--button-primary-bg)] px-5 py-2.5 text-[13px] font-medium text-[var(--button-primary-text)] transition-all hover:bg-[var(--button-primary-bg-hover)] hover:shadow-sm"
                                 >

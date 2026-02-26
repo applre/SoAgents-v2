@@ -23,6 +23,8 @@ import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EV
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
+import { useOnboarding } from '@/hooks/useOnboarding';
+import OnboardingOverlay from '@/components/onboarding/OnboardingOverlay';
 
 // ============================================================
 // MemoizedTabContent — prevents re-rendering tabs whose props haven't changed.
@@ -140,6 +142,9 @@ export default function App() {
 
   // App config for tray behavior (shared via ConfigProvider — no CONFIG_CHANGED event needed)
   const { config } = useConfig();
+
+  // Onboarding state
+  const { isActive: isOnboardingActive, currentStep: onboardingStep, markStepComplete, skipOnboarding, trackPageVisit } = useOnboarding();
 
   // Settings initial section state (for deep linking to specific section)
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
@@ -1187,6 +1192,14 @@ export default function App() {
     // Global Sidecar is now started on App mount, no need to start here
   }, []);
 
+  // Navigate to the first launcher tab (for onboarding guidance)
+  const handleNavigateToLauncher = useCallback(() => {
+    const launcherTab = tabsRef.current.find(t => t.view === 'launcher');
+    if (launcherTab) {
+      setActiveTabId(launcherTab.id);
+    }
+  }, []);
+
   // Listen for OPEN_SETTINGS custom event from child components
   useEffect(() => {
     const handleOpenSettingsEvent = (event: CustomEvent<{ section?: string }>) => {
@@ -1222,6 +1235,17 @@ export default function App() {
   // With Session-centric Sidecar (Owner model), stopping a cron task only releases
   // the CronTask owner. If Tab still owns the Sidecar, it continues running.
   // No SSE reconnection or Sidecar restart is needed.
+
+  // Track page visits for onboarding
+  useEffect(() => {
+    const activeTab = tabsRef.current.find(t => t.id === activeTabId);
+    if (!activeTab) return;
+    if (activeTab.view === 'settings') {
+      trackPageVisit('settings');
+    } else if (activeTab.view === 'launcher') {
+      trackPageVisit('launcher');
+    }
+  }, [activeTabId, trackPageVisit]);
 
   // Stable callback for Settings onSectionChange — avoids inline arrow creating new ref every render
   const handleSettingsSectionChange = useCallback(() => {
@@ -1303,6 +1327,18 @@ export default function App() {
           />
         ))}
       </div>
+
+      {/* Onboarding spotlight overlay */}
+      {isOnboardingActive && (
+        <OnboardingOverlay
+          currentStep={onboardingStep}
+          activeTabView={tabs.find(t => t.id === activeTabId)?.view ?? 'launcher'}
+          onNavigateToSettings={() => handleOpenSettings('providers')}
+          onNavigateToLauncher={handleNavigateToLauncher}
+          onStepComplete={markStepComplete}
+          onSkip={skipOnboarding}
+        />
+      )}
 
       {/* Close confirmation dialog */}
       {closeConfirmState && (

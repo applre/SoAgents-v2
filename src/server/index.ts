@@ -128,6 +128,7 @@ import { cleanupOldUnifiedLogs, appendUnifiedLogBatch } from './UnifiedLogger';
 import { broadcast, createSseClient, getClients } from './sse';
 import { checkAnthropicSubscription, getGitBranch, verifyProviderViaSdk, verifySubscription } from './provider-verify';
 import { createBridgeHandler } from './openai-bridge';
+import { handleGitStatus, handleGitLog, handleGitSubmit, handleGitInit, handleGitRevert, autoInitGitRepo } from './git';
 
 type ImagePayload = {
   name: string;
@@ -691,6 +692,9 @@ async function main() {
   seedBundledSkills();
 
   await initializeAgent(currentAgentDir, initialPrompt, initialSessionId);
+
+  // Auto-initialize git repo for the workspace on startup (non-fatal)
+  autoInitGitRepo(currentAgentDir);
 
   // Store sidecar port for OpenAI bridge loopback
   setSidecarPort(port);
@@ -2606,6 +2610,51 @@ async function main() {
           console.error('[api/git/branch] Error:', error);
           return jsonResponse({ branch: null }, 200); // Non-fatal, just return null
         }
+      }
+
+      // GET /api/git/status - Get workspace git status (changed files)
+      if (pathname === '/api/git/status' && request.method === 'GET') {
+        const result = handleGitStatus(currentAgentDir);
+        return jsonResponse(result);
+      }
+
+      // GET /api/git/log - Get recent git commit history
+      if (pathname === '/api/git/log' && request.method === 'GET') {
+        const result = handleGitLog(currentAgentDir);
+        return jsonResponse(result);
+      }
+
+      // POST /api/git/submit - Stage all and commit
+      if (pathname === '/api/git/submit' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const message = typeof body.message === 'string' ? body.message : undefined;
+        const workspacePath = typeof body.workspacePath === 'string' ? body.workspacePath : currentAgentDir;
+        const result = handleGitSubmit(workspacePath, message);
+        return jsonResponse(result);
+      }
+
+      // POST /api/git/init - Initialize git repo in workspace
+      if (pathname === '/api/git/init' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const workspacePath = typeof body.workspacePath === 'string' ? body.workspacePath : currentAgentDir;
+        try {
+          const result = handleGitInit(workspacePath);
+          return jsonResponse(result);
+        } catch (error) {
+          return jsonResponse(
+            { initialized: false, error: error instanceof Error ? error.message : 'git init failed' },
+            500,
+          );
+        }
+      }
+
+      // POST /api/git/revert - Revert a single file or all changes
+      if (pathname === '/api/git/revert' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const workspacePath = typeof body.workspacePath === 'string' ? body.workspacePath : currentAgentDir;
+        const filePath = typeof body.filePath === 'string' ? body.filePath : undefined;
+        const result = handleGitRevert(workspacePath, filePath);
+        return jsonResponse(result);
       }
 
       // GET /api/assets/qr-code - Fetch QR code image with local caching

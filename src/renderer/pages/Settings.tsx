@@ -1366,7 +1366,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
 
                 {/* Providers section uses wider layout */}
                 {activeSection === 'providers' && (
-                    <div className="mx-auto max-w-4xl px-8 py-8">
+                    <div data-onboarding-id="providers-section" className="mx-auto max-w-4xl px-8 py-8">
                         <div className="mb-8 flex items-center justify-between">
                             <h2 className="text-lg font-semibold text-[var(--ink)]">模型供应商</h2>
                             <button

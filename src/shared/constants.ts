@@ -80,8 +80,22 @@ export const CUSTOM_EVENTS = {
     OPEN_SETTINGS: 'open-settings',
     /** Fired when user tries to open a Session that's already active in another Tab */
     JUMP_TO_TAB: 'jump-to-tab',
-    // CONFIG_CHANGED removed — ConfigProvider shares state via Context, no DOM event bridge needed
+    /** Fired when config changes (e.g., API key saved) — used by onboarding to auto-advance */
+    CONFIG_CHANGED: 'config-changed',
     // Note: CRON_TASK_STOPPED event removed
     // With Session-centric Sidecar (Owner model), stopping a cron task only releases
     // the CronTask owner. If Tab still owns the Sidecar, it continues running.
+    /** Fired when user submits first instruction during onboarding step 3 */
+    ONBOARDING_INSTRUCTION_SUBMITTED: 'onboarding:instruction-submitted',
+} as const;
+
+/**
+ * Onboarding step IDs (0-indexed)
+ */
+export const ONBOARDING_STEPS = {
+  API_KEY: 0,
+  WORKSPACE: 1,
+  BRAND: 2,
+  INSTRUCTION: 3,
+  TOTAL: 4,
 } as const;

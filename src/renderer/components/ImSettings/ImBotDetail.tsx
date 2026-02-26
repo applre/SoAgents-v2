@@ -28,7 +28,7 @@ export default function ImBotDetail({
     botId: string;
     onBack: () => void;
 }) {
-    const { config, providers, apiKeys, projects, addProject, refreshConfig } = useConfig();
+    const { config, providers, apiKeys, projects, addProject, refreshConfig: _refreshConfig } = useConfig();
     const toast = useToast();
     const toastRef = useRef(toast);
     toastRef.current = toast;

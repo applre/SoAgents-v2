@@ -965,11 +965,20 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         };
 
         try {
-            // Persist to disk and refresh providers list
-            await addCustomProvider(newProvider);
-            // Save API key if provided
+            // Save API key FIRST so that addCustomProvider's rebuildAndPersistAvailableProviders()
+            // already sees the key and includes this provider in the available list.
+            // This fixes the bug where entering API key during creation always failed verification:
+            // the old flow saved the provider first (rebuild without key) then saved the key
+            // (rebuild with key), but the debounced verification could fire between the two rebuilds.
             if (customForm.apiKey) {
-                await handleSaveApiKey(newProvider, customForm.apiKey);
+                await saveApiKey(newProvider.id, customForm.apiKey);
+            }
+            // Persist provider to disk and refresh providers list
+            await addCustomProvider(newProvider);
+            // Trigger verification directly (no debounce — unlike handleSaveApiKey which
+            // debounces for keystroke input, creation is a one-shot operation)
+            if (customForm.apiKey) {
+                verifyProvider(newProvider, customForm.apiKey);
             }
             toast.success('服务商添加成功');
         } catch (error) {

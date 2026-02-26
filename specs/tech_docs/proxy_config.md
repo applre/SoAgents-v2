@@ -127,6 +127,12 @@ if let Some(proxy_settings) = read_proxy_settings() {
     cmd.env("HTTP_PROXY", proxy_url);
     cmd.env("HTTPS_PROXY", proxy_url);
     cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+} else {
+    // 主动剥离继承的系统代理 env vars，防止 Clash/V2Ray 泄漏
+    for var in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                 "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
+        cmd.env_remove(var);
+    }
 }
 ```
 

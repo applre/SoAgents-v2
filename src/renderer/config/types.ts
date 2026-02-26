@@ -410,11 +410,11 @@ export const PRESET_PROVIDERS: Provider[] = [
   },
   {
     id: 'volcengine',
-    name: '火山引擎',
+    name: '火山方舟 Coding Plan',
     vendor: '字节跳动',
     cloudProvider: '云服务商',
     type: 'api',
-    primaryModel: 'ark-code-latest',
+    primaryModel: 'doubao-seed-2.0-code',
     isBuiltin: true,
     authType: 'auth_token',
     websiteUrl: 'https://console.volcengine.com/',
@@ -423,8 +423,30 @@ export const PRESET_PROVIDERS: Provider[] = [
       disableNonessential: true,
     },
     models: [
-      { model: 'ark-code-latest', modelName: 'Ark Code Latest', modelSeries: 'volcengine' },
-      { model: 'Doubao-Seed-Code', modelName: 'Doubao Seed Code', modelSeries: 'volcengine' },
+      { model: 'doubao-seed-2.0-code', modelName: 'Doubao Seed 2.0 Code', modelSeries: 'volcengine' },
+      { model: 'glm-4.7', modelName: 'GLM 4.7', modelSeries: 'volcengine' },
+      { model: 'deepseek-v3.2', modelName: 'DeepSeek V3.2', modelSeries: 'volcengine' },
+      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'volcengine' },
+    ],
+  },
+  {
+    id: 'volcengine-api',
+    name: '火山方舟 API调用',
+    vendor: '字节跳动',
+    cloudProvider: '云服务商',
+    type: 'api',
+    primaryModel: 'doubao-seed-2-0-pro-260215',
+    isBuiltin: true,
+    authType: 'auth_token',
+    websiteUrl: 'https://console.volcengine.com/',
+    config: {
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
+      disableNonessential: true,
+    },
+    models: [
+      { model: 'doubao-seed-2-0-pro-260215', modelName: 'Doubao Seed 2.0 Pro', modelSeries: 'volcengine' },
+      { model: 'doubao-seed-2-0-code-preview-260215', modelName: 'Doubao Seed 2.0 Code Preview', modelSeries: 'volcengine' },
+      { model: 'doubao-seed-2-0-lite-260215', modelName: 'Doubao Seed 2.0 Lite', modelSeries: 'volcengine' },
     ],
   },
   {
@@ -472,6 +494,26 @@ export const PRESET_PROVIDERS: Provider[] = [
       { model: 'minimax/minimax-m2.5', modelName: 'MiniMax M2.5', modelSeries: 'minimax' },
       { model: 'moonshotai/kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'moonshot' },
       { model: 'z-ai/glm-5', modelName: 'GLM 5', modelSeries: 'zhipu' },
+    ],
+  },
+  {
+    id: 'aliyun-bailian-coding',
+    name: '阿里云百炼 Coding Plan',
+    vendor: '阿里云',
+    cloudProvider: '云服务商',
+    type: 'api',
+    primaryModel: 'qwen3.5-plus',
+    isBuiltin: true,
+    authType: 'auth_token',
+    websiteUrl: 'https://bailian.console.aliyun.com/',
+    config: {
+      baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
+    },
+    models: [
+      { model: 'qwen3.5-plus', modelName: 'Qwen 3.5 Plus', modelSeries: 'aliyun' },
+      { model: 'kimi-k2.5', modelName: 'Kimi K2.5', modelSeries: 'aliyun' },
+      { model: 'glm-5', modelName: 'GLM 5', modelSeries: 'aliyun' },
+      { model: 'MiniMax-M2.5', modelName: 'MiniMax M2.5', modelSeries: 'aliyun' },
     ],
   },
   {
@@ -534,7 +576,7 @@ export type McpServerStatus = 'connected' | 'failed' | 'needs-auth' | 'pending' 
 /**
  * MCP enable error type (returned by /api/mcp/enable)
  */
-export type McpEnableErrorType = 'command_not_found' | 'warmup_failed' | 'package_not_found' | 'runtime_error' | 'unknown';
+export type McpEnableErrorType = 'command_not_found' | 'warmup_failed' | 'package_not_found' | 'runtime_error' | 'connection_failed' | 'unknown';
 
 /**
  * MCP enable error response

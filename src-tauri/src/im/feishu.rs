@@ -79,6 +79,11 @@ const TOKEN_VALIDITY_SECS: u64 = 7200;
 const WS_INITIAL_BACKOFF_SECS: u64 = 1;
 /// WebSocket reconnect max backoff
 const WS_MAX_BACKOFF_SECS: u64 = 60;
+/// WebSocket read timeout: if no data (including server pings) is received
+/// within this period, the connection is assumed dead and will be reconnected.
+/// Feishu server pings every ~120s, so 300s (2.5x) allows for one missed
+/// ping plus network jitter, with near-zero false positives.
+const WS_READ_TIMEOUT_SECS: u64 = 300;
 
 /// Persist dedup cache to disk (atomic: write tmp → rename).
 /// Free function so it can be used from `spawn_blocking` ('static closure).
@@ -1299,12 +1304,21 @@ impl FeishuAdapter {
 
             let (mut ws_write, mut ws_read) = futures::StreamExt::split(ws_stream);
 
+            // Track last received data to detect dead connections.
+            // Feishu server sends protobuf pings every ~120s; if we receive nothing
+            // for WS_READ_TIMEOUT_SECS (300s ≈ 2.5x ping interval), the connection
+            // is assumed dead and we break out to reconnect.
+            let mut last_activity = tokio::time::Instant::now();
+
             // Read messages — Feishu uses ONLY binary protobuf frames
             loop {
+                let timeout_at = last_activity + std::time::Duration::from_secs(WS_READ_TIMEOUT_SECS);
                 tokio::select! {
                     msg = futures::StreamExt::next(&mut ws_read) => {
                         match msg {
                             Some(Ok(WsMessage::Binary(data))) => {
+                                last_activity = tokio::time::Instant::now();
+
                                 // Decode protobuf frame
                                 let frame = match WsFrame::decode(data.as_ref()) {
                                     Ok(f) => f,
@@ -1369,6 +1383,7 @@ impl FeishuAdapter {
                                 }
                             }
                             Some(Ok(WsMessage::Ping(data))) => {
+                                last_activity = tokio::time::Instant::now();
                                 // WebSocket-level ping (unlikely for Feishu, but handle it)
                                 let _ = ws_write.send(WsMessage::Pong(data)).await;
                             }
@@ -1384,8 +1399,24 @@ impl FeishuAdapter {
                                 ulog_info!("[feishu] WebSocket stream ended");
                                 break;
                             }
-                            _ => {} // Text, Pong, Frame — Feishu doesn't use these
+                            _ => {
+                                last_activity = tokio::time::Instant::now();
+                            }
                         }
+                    }
+                    _ = tokio::time::sleep_until(timeout_at) => {
+                        ulog_warn!(
+                            "[feishu] No data received for {}s (dead connection detected), reconnecting...",
+                            WS_READ_TIMEOUT_SECS
+                        );
+                        // Best-effort Close with short timeout — the connection is likely
+                        // dead, so don't block reconnection waiting for a send that may
+                        // never complete (kernel send buffer full → TCP retransmit timeout).
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(3),
+                            ws_write.send(WsMessage::Close(None)),
+                        ).await;
+                        break;
                     }
                     _ = shutdown_rx.changed() => {
                         if *shutdown_rx.borrow() {

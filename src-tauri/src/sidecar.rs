@@ -1322,10 +1322,28 @@ pub fn start_tab_sidecar<R: Runtime>(
                      Sidecar will start without proxy.",
                     e
                 );
+                // Still strip inherited system proxy env vars to prevent leaking
+                for var in &[
+                    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+                ] {
+                    cmd.env_remove(var);
+                }
             }
         }
     } else {
-        log::debug!("[sidecar] No proxy configured, using direct connection");
+        // No MyAgents proxy configured: actively strip inherited system proxy env vars.
+        // This matches Rust-side build_client_with_proxy() which calls .no_proxy().
+        // Without this, proxy tools (Clash/V2Ray) leak HTTP_PROXY into the sidecar,
+        // causing SDK to unconditionally route ALL requests through the proxy — even
+        // domestic API calls that don't need it — resulting in timeouts.
+        log::debug!("[sidecar] No proxy configured, stripping inherited proxy env vars");
+        for var in &[
+            "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+        ] {
+            cmd.env_remove(var);
+        }
     }
 
     // Inject management API port for Bun→Rust IPC (v0.1.21)
@@ -1757,7 +1775,23 @@ fn create_new_session_sidecar<R: Runtime>(
             }
             Err(e) => {
                 log::error!("[sidecar] Invalid proxy configuration: {}", e);
+                // Still strip inherited system proxy env vars to prevent leaking
+                for var in &[
+                    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+                ] {
+                    cmd.env_remove(var);
+                }
             }
+        }
+    } else {
+        // Same as normal sidecar: strip inherited system proxy env vars
+        log::debug!("[sidecar] No proxy configured for IM bot, stripping inherited proxy env vars");
+        for var in &[
+            "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+            "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+        ] {
+            cmd.env_remove(var);
         }
     }
 

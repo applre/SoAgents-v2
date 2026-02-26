@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readFileSync, readlinkSync, rmSync } from 'fs';
+import { join, resolve, sep } from 'path';
 import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { getScriptDir, getBundledBunDir } from './utils/runtime';
@@ -29,6 +29,11 @@ const DECORATIVE_TEXT_MAX_LENGTH = 5000;
 // Our product (MyAgents) uses ~/.myagents/ for user configuration
 // This is SEPARATE from Claude CLI's ~/.claude/ directory
 // Only subscription-related features may access ~/.claude/ (handled by SDK internally)
+//
+// IMPORTANT: Do NOT set CLAUDE_CONFIG_DIR in the SDK subprocess environment.
+// The SDK derives Keychain service names from CLAUDE_CONFIG_DIR — setting it would
+// break Anthropic subscription OAuth (Keychain entry "Claude Code-credentials" won't be found).
+// Instead, user-level skills are synced as symlinks into each project's .claude/skills/.
 const MYAGENTS_USER_DIR = '.myagents';
 
 /**
@@ -41,6 +46,154 @@ export function getMyAgentsUserDir(): string {
   // temp is now guaranteed to have a valid platform-specific fallback
   const homeDir = home || temp;
   return join(homeDir, MYAGENTS_USER_DIR);
+}
+
+/**
+ * Sync user-level skills and commands into a project's .claude/ as symlinks.
+ *
+ * The SDK has no API to filter skills/commands — it reads ALL entries from settingSources paths.
+ * We use settingSources: ['project'] (reads from <cwd>/.claude/) and sync user-level
+ * skills/commands as symlinks into the project's .claude/skills/ and .claude/commands/.
+ *
+ * This avoids setting CLAUDE_CONFIG_DIR (which would break Keychain credential lookup).
+ *
+ * Skills (directories):
+ * - Creates symlinks for enabled skills: <project>/.claude/skills/<name> → ~/.myagents/skills/<name>
+ * - Removes symlinks for disabled skills (only symlinks, never real project directories)
+ * - Does NOT touch real (non-symlink) skill directories in the project
+ *
+ * Commands (.md files):
+ * - Creates symlinks for all commands: <project>/.claude/commands/<name>.md → ~/.myagents/commands/<name>.md
+ * - Does NOT touch real (non-symlink) command files in the project
+ *
+ * Called at session startup (startStreamingSession) and after skill/command CRUD operations.
+ */
+export function syncProjectUserConfig(projectDir: string): void {
+  const myagentsDir = getMyAgentsUserDir();
+  const isWin = process.platform === 'win32';
+
+  // ===== SKILLS SYNC =====
+  const userSkillsDir = join(myagentsDir, 'skills');
+  const projectSkillsDir = join(projectDir, '.claude', 'skills');
+
+  if (existsSync(userSkillsDir)) {
+    mkdirSync(projectSkillsDir, { recursive: true });
+
+    // Read disabled list from skills-config.json
+    let disabled: string[] = [];
+    try {
+      const configPath = join(myagentsDir, 'skills-config.json');
+      if (existsSync(configPath)) {
+        const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+        disabled = Array.isArray(raw?.disabled) ? raw.disabled : [];
+      }
+    } catch {
+      // Ignore read errors — treat all skills as enabled
+    }
+
+    // Track which skill names we manage (enabled or disabled) so we can detect dangling symlinks
+    const managedSkillNames = new Set<string>();
+
+    for (const entry of readdirSync(userSkillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.')) continue;
+
+      managedSkillNames.add(entry.name);
+      const linkPath = join(projectSkillsDir, entry.name);
+      const target = join(userSkillsDir, entry.name);
+
+      if (disabled.includes(entry.name)) {
+        // Disabled: remove symlink if we created one (never remove real dirs)
+        try {
+          if (existsSync(linkPath) && lstatSync(linkPath).isSymbolicLink()) {
+            rmSync(linkPath);
+          }
+        } catch { /* ignore */ }
+        continue;
+      }
+
+      // Skip if a real (non-symlink) directory exists — don't overwrite project skills
+      try {
+        if (existsSync(linkPath)) {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue; // real dir, skip
+          rmSync(linkPath); // stale symlink, recreate
+        }
+      } catch { /* doesn't exist, create it */ }
+
+      try {
+        symlinkSync(target, linkPath, isWin ? 'junction' : undefined);
+      } catch (err) {
+        console.warn(`[skill-sync] Failed to symlink skill ${entry.name}:`, err);
+      }
+    }
+
+    // Cleanup: remove dangling symlinks left by deleted/renamed user skills
+    // Only removes symlinks pointing into our userSkillsDir — never touches real project dirs
+    try {
+      for (const entry of readdirSync(projectSkillsDir, { withFileTypes: true })) {
+        const linkPath = join(projectSkillsDir, entry.name);
+        try {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue;
+          const target = readlinkSync(linkPath);
+          const resolvedTarget = resolve(projectSkillsDir, target);
+          if (resolvedTarget.startsWith(userSkillsDir + sep) && !managedSkillNames.has(entry.name)) {
+            rmSync(linkPath);
+          }
+        } catch { /* ignore individual errors */ }
+      }
+    } catch { /* ignore — projectSkillsDir may have been removed externally */ }
+  }
+
+  // ===== COMMANDS SYNC =====
+  const userCommandsDir = join(myagentsDir, 'commands');
+  const projectCommandsDir = join(projectDir, '.claude', 'commands');
+
+  if (existsSync(userCommandsDir)) {
+    mkdirSync(projectCommandsDir, { recursive: true });
+
+    // Track managed command filenames for dangling symlink cleanup
+    const managedCommandFiles = new Set<string>();
+
+    for (const entry of readdirSync(userCommandsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      if (entry.name.startsWith('.')) continue;
+
+      managedCommandFiles.add(entry.name);
+      const linkPath = join(projectCommandsDir, entry.name);
+      const target = join(userCommandsDir, entry.name);
+
+      // Skip if a real (non-symlink) file exists — don't overwrite project commands
+      try {
+        if (existsSync(linkPath)) {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue; // real file, skip
+          rmSync(linkPath); // stale symlink, recreate
+        }
+      } catch { /* doesn't exist, create it */ }
+
+      try {
+        // Note: file symlinks on Windows require Developer Mode (unlike junction for directories).
+        // If this fails, the command won't be available in the project — logged as warning.
+        symlinkSync(target, linkPath);
+      } catch (err) {
+        console.warn(`[command-sync] Failed to symlink command ${entry.name}:`, err);
+      }
+    }
+
+    // Cleanup: remove dangling symlinks left by deleted/renamed user commands
+    try {
+      for (const entry of readdirSync(projectCommandsDir, { withFileTypes: true })) {
+        const linkPath = join(projectCommandsDir, entry.name);
+        try {
+          if (!lstatSync(linkPath).isSymbolicLink()) continue;
+          const target = readlinkSync(linkPath);
+          const resolvedTarget = resolve(projectCommandsDir, target);
+          if (resolvedTarget.startsWith(userCommandsDir + sep) && !managedCommandFiles.has(entry.name)) {
+            rmSync(linkPath);
+          }
+        } catch { /* ignore individual errors */ }
+      }
+    } catch { /* ignore */ }
+  }
 }
 
 type SessionState = 'idle' | 'running' | 'error';
@@ -384,6 +537,8 @@ let currentTurnUsage = {
 let currentTurnStartTime: number | null = null;
 // Tool count for current turn
 let currentTurnToolCount = 0;
+// Whether the current turn produced any visible assistant text output
+let currentTurnHasOutput = false;
 
 function resetTurnUsage(): void {
   currentTurnUsage = {
@@ -396,6 +551,7 @@ function resetTurnUsage(): void {
   };
   currentTurnStartTime = null;
   currentTurnToolCount = 0;
+  currentTurnHasOutput = false;
 }
 
 // ===== MCP Configuration =====
@@ -711,22 +867,21 @@ function checkMcpToolPermission(toolName: string): { allowed: true } | { allowed
  * Build SDK settingSources
  *
  * settingSources controls where SDK reads settings from:
- * - 'user': ~/.claude/ (Claude CLI's user directory)
+ * - 'user': reads from CLAUDE_CONFIG_DIR (default ~/.claude/)
  * - 'project': <cwd>/.claude/ (project-level config)
  *
  * We use 'project' only:
- * - Enables SDK to read project's .claude/skills/, .claude/commands/, CLAUDE.md
- * - Project-level MCP in .claude/ will also be discovered (acceptable - it's project config)
+ * - User-level skills are synced as symlinks into <cwd>/.claude/skills/ by syncProjectUserConfig()
+ * - Avoids setting CLAUDE_CONFIG_DIR which would break Keychain credential lookup
+ * - Project-level: SDK reads project's .claude/skills/, .claude/commands/, CLAUDE.md
  *
  * We exclude 'user' because:
- * - ~/.claude/ is Claude CLI's directory, not our product's directory
- * - Our product (MyAgents) uses ~/.myagents/ for user-level config
- * - We manage additional MCP explicitly via mcpServers option
+ * - 'user' reads from ~/.claude/ (Claude CLI's directory, not ours)
+ * - Our product uses ~/.myagents/ for user-level config
+ * - Setting CLAUDE_CONFIG_DIR to redirect would break Anthropic subscription OAuth
+ *   (SDK derives Keychain service names from CLAUDE_CONFIG_DIR path hash)
  */
 function buildSettingSources(): ('user' | 'project')[] {
-  // Always use 'project' to enable SDK reading from <cwd>/.claude/
-  // This is required for: skills, commands, CLAUDE.md, project settings
-  // Note: Project-level MCP in .claude/ will also be discovered (acceptable)
   return ['project'];
 }
 
@@ -868,6 +1023,9 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
         url: server.url,
         headers: server.headers,
       };
+      console.log(`[agent] MCP ${server.id}: ${server.type} → ${server.url}`);
+    } else if (server.type === 'sse' || server.type === 'http') {
+      console.warn(`[agent] MCP ${server.id}: Missing url for ${server.type} server, skipping`);
     }
   }
 
@@ -1498,6 +1656,10 @@ function localizeImError(rawError: string): string {
   if (rawError.includes('overloaded') || rawError.includes('503')) {
     return 'AI 服务繁忙，请稍后重试';
   }
+  // Stale session (SDK conversation data lost after Sidecar restart)
+  if (rawError.includes('No conversation found')) {
+    return '会话已过期，已自动重置。请重新发送消息';
+  }
   // Callback replaced
   if (rawError.includes('Replaced by a newer') || rawError.includes('消息处理被新请求取代')) {
     return '消息处理被新请求取代，请重新发送';
@@ -1636,6 +1798,13 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     [PATH_KEY]: finalPath,
+    // Disable SDK nonessential traffic (Statsig telemetry, Sentry error reporting, surveys).
+    // MyAgents manages its own telemetry; these external connections add startup latency
+    // and can timeout in restricted network environments (e.g. China).
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    // DO NOT set CLAUDE_CONFIG_DIR here — it would change the Keychain service name
+    // and break Anthropic subscription OAuth. User-level skills are synced as symlinks
+    // into project .claude/skills/ by syncProjectUserConfig() instead.
   };
 
   // Use provided providerEnv or fall back to currentProviderEnv
@@ -3421,6 +3590,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   }
 
   isPreWarming = preWarm;
+  // Sync enabled user-level skills as symlinks into project's .claude/skills/
+  // Must happen before buildClaudeSessionEnv() so SDK sees them via settingSources: ['project']
+  syncProjectUserConfig(agentDir);
   const env = buildClaudeSessionEnv();
   console.log(`[agent] ${preWarm ? 'pre-warm' : 'start'} session cwd=${agentDir}`);
   shouldAbortSession = false;
@@ -3493,9 +3665,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const commonQueryOptions = {
       enableFileCheckpointing: true,
       maxThinkingTokens: 32_000,
-      // Only use project-level settings from .claude/ directory
-      // We don't use 'user' (~/.claude/) because our config is in ~/.myagents/
-      // MCP is explicitly configured via mcpServers, not SDK auto-discovery
+      // Load settings from project scope only (.claude/)
+      // User-level skills are synced as symlinks into <cwd>/.claude/skills/ by syncProjectUserConfig()
+      // CLAUDE_CONFIG_DIR is NOT set — preserves Anthropic subscription Keychain lookup
       settingSources: buildSettingSources(),
       // Permission mode mapping (uses mapToSdkPermissionMode):
       // - auto → acceptEdits (auto-accept edits, check others via canUseTool)
@@ -3786,6 +3958,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!decorativeCheck.filtered) {
                   broadcast('chat:message-chunk', streamEvent.delta.text);
                   appendTextChunk(streamEvent.delta.text);
+                  currentTurnHasOutput = true;
                   // IM stream: forward non-subagent text delta
                   imStreamCallback?.('delta', streamEvent.delta.text);
                 } else {
@@ -4230,6 +4403,27 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           }
         }
 
+        // Surface SDK-level errors that produced no assistant output (e.g. "Unknown skill: xxx").
+        // These results have non-empty result text but no visible assistant text was streamed.
+        // Without this, the user sees nothing — the message just silently completes.
+        // Note: Cannot rely on modelUsage — it accumulates across persistent session turns.
+        const resultText = resultMessage.result || '';
+        if (resultText && !currentTurnHasOutput && !currentTurnToolCount) {
+          console.warn('[agent] SDK returned result with no API output, surfacing to user:', resultText);
+          if (resultMessage.is_error) {
+            // True SDK error: show as dismissible error banner (not regular assistant text)
+            broadcast('chat:agent-error', { message: resultText });
+          } else {
+            // SDK result without output (e.g. "Unknown skill"): show as message text
+            broadcast('chat:message-chunk', resultText);
+          }
+          // Also forward to IM callback (prevents "(No Response)" for non-is_error SDK failures)
+          if (imStreamCallback) {
+            imStreamCallback('complete', resultText);
+            imStreamCallback = null;
+          }
+        }
+
         // Prefer modelUsage (per-model breakdown), fallback to aggregate usage
         if (resultMessage.modelUsage) {
           let totalInput = 0;
@@ -4346,6 +4540,21 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         schedulePreWarm(); // Establish resumed session so next user message works
       }
       return; // Skip error broadcast, let finally handle cleanup + pre-warm retry
+    }
+
+    // "No conversation found" recovery: our metadata has sessionRegistered=true but
+    // the SDK session directory is gone (e.g., IM Bot restart after previous Sidecar
+    // failed to start — proxy leak, network error — so the session was persisted to
+    // im_state.json but the SDK conversation was never actually created).
+    // Fix: switch to create mode. Don't return — let the error flow through to notify
+    // IM/Desktop user. Pre-warm (scheduled here or in finally) will create a fresh session.
+    if (errorMessage.includes('No conversation found') && sessionRegistered) {
+      console.warn(`[agent] Session ${sessionId} not found by SDK, resetting sessionRegistered for fresh start`);
+      sessionRegistered = false;
+      if (!isPreWarming) {
+        schedulePreWarm(); // Establish fresh session so next user message works
+      }
+      // Fall through to error handling so IM SSE stream closes properly
     }
 
     // Enhanced error diagnostics for Windows subprocess failures

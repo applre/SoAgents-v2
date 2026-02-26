@@ -1639,6 +1639,10 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     [PATH_KEY]: finalPath,
+    // Disable SDK nonessential traffic (Statsig telemetry, Sentry error reporting, surveys).
+    // MyAgents manages its own telemetry; these external connections add startup latency
+    // and can timeout in restricted network environments (e.g. China).
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   };
 
   // Use provided providerEnv or fall back to currentProviderEnv

@@ -332,24 +332,19 @@ try {
     Copy-Item "$sdkSrc\vendor" $sdkDest -Recurse -Force
     Write-Host "    OK - SDK 依赖复制完成" -ForegroundColor Green
 
-    # 预装 agent-browser CLI
+    # 预装 agent-browser CLI（使用预生成的 lockfile 避免耗时的依赖解析）
     Write-Host "  预装 agent-browser CLI..." -ForegroundColor Cyan
     $agentBrowserDir = Join-Path $ProjectDir "src-tauri\resources\agent-browser-cli"
-    # 版本号从 index.ts 的 AGENT_BROWSER_VERSION 常量获取（单一来源）
-    $indexTs = Get-Content (Join-Path $ProjectDir "src\server\index.ts") -Raw
-    if ($indexTs -match "const AGENT_BROWSER_VERSION = '([^']+)'") {
-        $abVersion = $Matches[1]
-    } else {
-        throw "无法从 index.ts 读取 AGENT_BROWSER_VERSION"
-    }
-    Write-Host "  版本: $abVersion" -ForegroundColor Cyan
+    $lockfileDir = Join-Path $ProjectDir "src\server\agent-browser-lockfile"
     if (Test-Path $agentBrowserDir) {
         Remove-Item -Recurse -Force $agentBrowserDir
     }
     New-Item -ItemType Directory -Path $agentBrowserDir -Force | Out-Null
-    '{}' | Set-Content (Join-Path $agentBrowserDir "package.json") -Encoding UTF8
+    # 复制预生成的 package.json + bun.lock（跳过依赖解析，秒级安装）
+    Copy-Item (Join-Path $lockfileDir "package.json") $agentBrowserDir -Force
+    Copy-Item (Join-Path $lockfileDir "bun.lock") $agentBrowserDir -Force
     Push-Location $agentBrowserDir
-    & bun add "agent-browser@$abVersion"
+    & bun install --frozen-lockfile --ignore-scripts
     Pop-Location
     if ($LASTEXITCODE -ne 0) {
         throw "agent-browser 预装失败"

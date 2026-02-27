@@ -226,20 +226,16 @@ cp "${SDK_SRC}/sdk.mjs" "${SDK_DEST}/"
 cp "${SDK_SRC}"/*.wasm "${SDK_DEST}/"
 cp -R "${SDK_SRC}/vendor" "${SDK_DEST}/"
 
-# 预装 agent-browser CLI
+# 预装 agent-browser CLI（使用预生成的 lockfile 避免耗时的依赖解析）
 echo -e "  ${CYAN}预装 agent-browser CLI...${NC}"
 AGENT_BROWSER_DIR="${PROJECT_DIR}/src-tauri/resources/agent-browser-cli"
-# 版本号从 index.ts 的 AGENT_BROWSER_VERSION 常量获取（单一来源）
-AB_VERSION=$(grep "const AGENT_BROWSER_VERSION" "${PROJECT_DIR}/src/server/index.ts" | sed "s/.*= '//;s/'.*//" )
-if [ -z "$AB_VERSION" ]; then
-    echo -e "${RED}✗ 无法从 index.ts 读取 AGENT_BROWSER_VERSION${NC}"
-    exit 1
-fi
-echo -e "  版本: ${AB_VERSION}"
+LOCKFILE_DIR="${PROJECT_DIR}/src/server/agent-browser-lockfile"
 rm -rf "${AGENT_BROWSER_DIR}"
 mkdir -p "${AGENT_BROWSER_DIR}"
-echo '{}' > "${AGENT_BROWSER_DIR}/package.json"
-(cd "${AGENT_BROWSER_DIR}" && bun add "agent-browser@${AB_VERSION}")
+# 复制预生成的 package.json + bun.lock（跳过依赖解析，秒级安装）
+cp "${LOCKFILE_DIR}/package.json" "${AGENT_BROWSER_DIR}/"
+cp "${LOCKFILE_DIR}/bun.lock" "${AGENT_BROWSER_DIR}/"
+(cd "${AGENT_BROWSER_DIR}" && bun install --frozen-lockfile --ignore-scripts)
 if [ $? -ne 0 ]; then
     echo -e "${RED}✗ agent-browser 预装失败${NC}"
     exit 1

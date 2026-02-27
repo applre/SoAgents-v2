@@ -4486,17 +4486,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // Surface SDK-level errors that produced no assistant output (e.g. "Unknown skill: xxx").
         // These results have non-empty result text but no visible assistant text was streamed.
         // Without this, the user sees nothing — the message just silently completes.
-        // Note: Cannot rely on modelUsage — it accumulates across persistent session turns.
+        // Always use chat:agent-error (banner) instead of chat:message-chunk, because
+        // message-chunk + message-complete fire in the same tick and React batching
+        // can swallow the streaming message before it renders.
         const resultText = resultMessage.result || '';
         if (resultText && !currentTurnHasOutput && !currentTurnToolCount) {
           console.warn('[agent] SDK returned result with no API output, surfacing to user:', resultText);
-          if (resultMessage.is_error) {
-            // True SDK error: show as dismissible error banner (not regular assistant text)
-            broadcast('chat:agent-error', { message: resultText });
-          } else {
-            // SDK result without output (e.g. "Unknown skill"): show as message text
-            broadcast('chat:message-chunk', resultText);
-          }
+          broadcast('chat:agent-error', { message: resultText });
           // Also forward to IM callback (prevents "(No Response)" for non-is_error SDK failures)
           if (imStreamCallback) {
             imStreamCallback('complete', resultText);

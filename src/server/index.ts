@@ -373,10 +373,11 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
-      if (config.seeded.includes(folder)) continue;
+      const dst = join(userSkillsDir, folder);
+      // Re-seed if marked as seeded but directory was deleted
+      if (config.seeded.includes(folder) && existsSync(dst)) continue;
 
       const src = join(bundledDir, folder);
-      const dst = join(userSkillsDir, folder);
       // Skip if destination already exists (don't overwrite user's custom content)
       if (existsSync(dst)) {
         config.seeded.push(folder);
@@ -485,22 +486,44 @@ function autoInstallAgentBrowser(): void {
   });
 
   // Handle in background — don't block startup
-  proc.exited.then((code) => {
-    rmSync(lockFile, { force: true });
-    if (code === 0) {
-      console.log('[agent-browser] Auto-install completed');
-      // Now create the wrapper
-      const cliPath = getAgentBrowserCliPath();
-      if (cliPath) {
-        writeAgentBrowserWrapper(cliPath);
-      } else {
-        console.warn('[agent-browser] CLI still not found after install');
-      }
-    } else {
+  proc.exited.then(async (code) => {
+    if (code !== 0) {
+      rmSync(lockFile, { force: true });
       new Response(proc.stderr).text().then((stderr) => {
         console.error(`[agent-browser] Auto-install failed (exit ${code}):`, stderr.slice(0, 500));
       });
+      return;
     }
+
+    console.log('[agent-browser] npm install completed');
+    const cliPath = getAgentBrowserCliPath();
+    if (!cliPath) {
+      rmSync(lockFile, { force: true });
+      console.warn('[agent-browser] CLI still not found after install');
+      return;
+    }
+    writeAgentBrowserWrapper(cliPath);
+
+    // Install Chromium using agent-browser's own playwright-core (avoids version mismatch).
+    // See: https://github.com/vercel-labs/agent-browser/issues/107
+    const playwrightCli = join(installDir, 'node_modules', 'playwright-core', 'cli.js');
+    if (existsSync(playwrightCli)) {
+      console.log('[agent-browser] Installing Chromium via bundled playwright-core...');
+      const bunPath = getBundledRuntimePath();
+      const chromiumProc = Bun.spawn([bunPath, playwrightCli, 'install', 'chromium'], {
+        cwd: installDir,
+        stdout: 'ignore',
+        stderr: 'pipe',
+      });
+      const chromiumCode = await chromiumProc.exited;
+      if (chromiumCode === 0) {
+        console.log('[agent-browser] Chromium installed successfully');
+      } else {
+        const stderr = await new Response(chromiumProc.stderr).text();
+        console.warn(`[agent-browser] Chromium install failed (exit ${chromiumCode}):`, stderr.slice(0, 500));
+      }
+    }
+    rmSync(lockFile, { force: true });
   }).catch((err) => {
     rmSync(lockFile, { force: true });
     console.error('[agent-browser] Auto-install error:', err);

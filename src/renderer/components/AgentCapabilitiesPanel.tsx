@@ -23,6 +23,7 @@ interface CapabilityItem {
     description: string;
     scope?: 'user' | 'project';
     model?: string;
+    folderName?: string;
 }
 
 interface AgentCapabilitiesPanelProps {
@@ -33,6 +34,8 @@ interface AgentCapabilitiesPanelProps {
     onInsertSlashCommand?: (command: string) => void;
     /** Open settings panel to a specific tab */
     onOpenSettings?: (tab: Extract<WorkspaceTab, 'skills-commands' | 'agents'>) => void;
+    /** Copy a project skill to global skills */
+    onSyncSkillToGlobal?: (folderName: string) => void;
     /** Called when expand/collapse state changes (for sibling layout recalculation) */
     onExpandChange?: (expanded: boolean) => void;
 }
@@ -100,6 +103,7 @@ export default memo(function AgentCapabilitiesPanel({
     enabledCommands,
     onInsertSlashCommand,
     onOpenSettings,
+    onSyncSkillToGlobal,
     onExpandChange,
 }: AgentCapabilitiesPanelProps) {
     const [isExpanded, setIsExpanded] = useState(true); // Default expanded
@@ -110,6 +114,10 @@ export default memo(function AgentCapabilitiesPanel({
     // Stabilize onExpandChange ref to avoid re-creating toggleExpand
     const onExpandChangeRef = useRef(onExpandChange);
     useEffect(() => { onExpandChangeRef.current = onExpandChange; }, [onExpandChange]);
+
+    // Stabilize onSyncSkillToGlobal ref
+    const onSyncSkillToGlobalRef = useRef(onSyncSkillToGlobal);
+    useEffect(() => { onSyncSkillToGlobalRef.current = onSyncSkillToGlobal; }, [onSyncSkillToGlobal]);
 
     // Context menu state
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
@@ -181,7 +189,7 @@ export default memo(function AgentCapabilitiesPanel({
         setCtxMenu({ x: e.clientX, y: e.clientY, items });
     }, [openSettingsForScope]);
 
-    const handleSkillCommandContextMenu = useCallback((e: React.MouseEvent, scope?: 'user' | 'project') => {
+    const handleSkillCommandContextMenu = useCallback((e: React.MouseEvent, scope?: 'user' | 'project', folderName?: string) => {
         e.preventDefault();
         e.stopPropagation();
         const items: ContextMenuItem[] = [
@@ -190,6 +198,16 @@ export default memo(function AgentCapabilitiesPanel({
                 onClick: () => openSettingsForScope(scope, 'skills-commands', 'skills'),
             },
         ];
+        // Project skills can be synced to global
+        if (scope === 'project' && folderName) {
+            items.push({
+                label: '同步至全局技能',
+                onClick: () => {
+                    onSyncSkillToGlobalRef.current?.(folderName);
+                    setCtxMenu(null);
+                },
+            });
+        }
         setCtxMenu({ x: e.clientX, y: e.clientY, items });
     }, [openSettingsForScope]);
 
@@ -274,7 +292,7 @@ export default memo(function AgentCapabilitiesPanel({
                                     <ItemTooltip key={`skill-${item.name}`} scope={item.scope} description={item.description}>
                                         <button
                                             onClick={() => handleSkillClick(item.name)}
-                                            onContextMenu={e => handleSkillCommandContextMenu(e, item.scope)}
+                                            onContextMenu={e => handleSkillCommandContextMenu(e, item.scope, item.folderName)}
                                             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--paper-contrast)] transition-colors"
                                         >
                                             <Sparkles className="h-3 w-3 shrink-0 text-amber-500" />

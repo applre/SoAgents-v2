@@ -67,12 +67,14 @@ interface DirectoryPanelProps {
   onInsertReference?: (paths: string[]) => void;
   /** Enabled sub-agent definitions (from Chat.tsx) */
   enabledAgents?: Record<string, { description: string; prompt?: string; model?: string; scope?: 'user' | 'project' }>;
-  enabledSkills?: Array<{ name: string; description: string; scope?: 'user' | 'project' }>;
+  enabledSkills?: Array<{ name: string; description: string; scope?: 'user' | 'project'; folderName?: string }>;
   enabledCommands?: Array<{ name: string; description: string; scope?: 'user' | 'project' }>;
   /** Insert /command into chat input */
   onInsertSlashCommand?: (command: string) => void;
   /** Open settings panel to a specific tab */
   onOpenSettings?: (tab: Extract<WorkspaceTab, 'skills-commands' | 'agents'>) => void;
+  /** Copy a project skill to global skills */
+  onSyncSkillToGlobal?: (folderName: string) => void;
 }
 
 type FilePreview = {
@@ -119,6 +121,7 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
   enabledCommands,
   onInsertSlashCommand,
   onOpenSettings,
+  onSyncSkillToGlobal,
 }, ref) {
   const [directoryInfo, setDirectoryInfo] = useState<DirectoryTree | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1238,6 +1241,7 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
               enabledCommands={enabledCommands}
               onInsertSlashCommand={onInsertSlashCommand}
               onOpenSettings={onOpenSettings}
+              onSyncSkillToGlobal={onSyncSkillToGlobal}
               onExpandChange={updateTreeHeight}
             />
           </div>

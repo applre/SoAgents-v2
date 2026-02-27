@@ -4083,6 +4083,55 @@ async function main() {
         }
       }
 
+      // POST /api/skill/copy-to-global - Copy a project skill to global (~/.myagents/skills/)
+      // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
+      if (pathname === '/api/skill/copy-to-global' && request.method === 'POST') {
+        try {
+          const { folderName } = await request.json() as { folderName: string };
+          if (!folderName || typeof folderName !== 'string' || !isValidItemName(folderName)) {
+            return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
+          }
+
+          // Validate project skills directory
+          if (!projectSkillsBaseDir) {
+            return jsonResponse({ success: false, error: '当前没有项目工作目录' }, 400);
+          }
+
+          const srcDir = join(projectSkillsBaseDir, folderName);
+          if (!existsSync(srcDir)) {
+            return jsonResponse({ success: false, error: '项目技能不存在' }, 404);
+          }
+
+          // Check SKILL.md exists in source
+          if (!existsSync(join(srcDir, 'SKILL.md'))) {
+            return jsonResponse({ success: false, error: '项目技能缺少 SKILL.md' }, 400);
+          }
+
+          // Check if already exists in global
+          const destDir = join(userSkillsBaseDir, folderName);
+          if (existsSync(destDir)) {
+            return jsonResponse({ success: false, error: '全局技能中已存在同名技能' }, 409);
+          }
+
+          // Ensure global skills directory exists
+          mkdirSync(userSkillsBaseDir, { recursive: true });
+
+          // Copy the skill folder
+          copyDirRecursiveSync(srcDir, destDir, '[api/skill/copy-to-global]');
+
+          // Sync symlinks into project
+          if (currentAgentDir) syncProjectUserConfig(currentAgentDir);
+
+          return jsonResponse({ success: true, folderName });
+        } catch (error) {
+          console.error('[api/skill/copy-to-global] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to copy skill to global' },
+            500
+          );
+        }
+      }
+
       // POST /api/skill/create - Create new skill
       if (pathname === '/api/skill/create' && request.method === 'POST') {
         try {

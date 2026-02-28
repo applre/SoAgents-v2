@@ -21,19 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **检测并清除 settings.json 环境变量覆盖**：防止 CLAUDE_CONFIG_DIR 等覆盖影响认证
 
 ### Fixed
-- **Windows agent-browser 命令找不到**：SDK 使用 Git Bash 不识别 .cmd，改为同时创建 .cmd + POSIX sh 双 wrapper
-- **构建脚本 agent-browser 预装卡死**：bun add 解析 200+ 依赖树无限挂起，改用预生成 lockfile 秒级安装
-- **macOS 公证失败**：签名 agent-browser-cli 的 bare-fs/bare-os/bare-url .bare 原生二进制
-- **构建脚本版本一致性校验**：index.ts 与 lockfile 版本不匹配时 fail fast + 签名失败硬中断
-- **新会话首条消息 loading 状态闪断**：isStreamingRef 防止 session ID 升级时误触 loadSession
-- **Global Sidecar pre-warm 僵尸**：仅 system_init 才清除启动超时，防止 rate_limit_event 误清
+- **Windows Sidecar 启动失败**：UNC 路径前缀导致 Bun 无法识别资源路径
+- **Windows agent-browser 浏览器自动化不可用**：daemon 启动失败（无 Node.js）+ 命令找不到（Git Bash 不识别 .cmd）
+- **Windows 技能同步失败**：symlink junction 删除需要 recursive 选项
+- **Windows 启动诊断增强**：崩溃日志跨平台 + 启动 beacon + 健康检查可见化
+- **agent-browser 构建产物缺失**：运行时报 "No binary found"
+- **agent-browser 构建脚本预装卡死**：改用预生成 lockfile 秒级安装
+- **macOS 公证失败**：agent-browser 原生二进制未签名
+- **Global Sidecar pre-warm 异常**：无效 pre-warm 启动 + Tab pre-warm 超时误杀 + 僵尸进程
+- **Global Sidecar 意外加载 MCP**：Settings/Launcher 不应加载用户 MCP 配置
+- **IM Bot 重启后 "No conversation found" 死循环**
+- **新会话首条消息 loading 状态闪断**
 - **Windows 文件重命名导致文件被移到 AppData 目录**
-- **供应商选择菜单溢出**：定高滚动 + 加宽 + 单行截断
-- **工作区文件树大目录无法展开**：提升条目上限至 50000
-- **macOS 全屏退出后 Tab 遮挡红绿灯**：双重延迟检测窗口状态
+- **供应商选择菜单溢出屏幕**
+- **工作区大目录无法展开**（条目上限 50000）
+- **macOS 全屏退出后 Tab 遮挡红绿灯**
 
 ### Changed
-- **Code Review 修复**：9 项问题修复 + ensureChromiumInstalled 文件锁重构
+- **路径 normalize Pit of Success 重构**：源头统一处理，消除消费端重复 strip
+- **Bun 输出接入统一日志**：Sidecar stdout/stderr 可在日志面板查看
+- **消除 Rust 编译 warning**：平台分离 graceful shutdown 逻辑
+- **Code Review 修复**：构建版本校验 + 签名失败硬中断 + 死代码清理
 
 ---
 

@@ -602,6 +602,15 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
     args: ['@playwright/mcp@latest'],
     isBuiltin: true,
   },
+  {
+    id: 'ddg-search',
+    name: 'DDG-Search',
+    description: 'DuckDuckGo 全网搜索，免费快速',
+    type: 'stdio',
+    command: 'uvx',
+    args: ['duckduckgo-mcp-server'],
+    isBuiltin: true,
+  },
 ];
 
 /**

@@ -332,6 +332,52 @@ try {
     Copy-Item "$sdkSrc\vendor" $sdkDest -Recurse -Force
     Write-Host "    OK - SDK 依赖复制完成" -ForegroundColor Green
 
+    # 预装 agent-browser CLI（使用预生成的 lockfile 避免耗时的依赖解析）
+    Write-Host "  预装 agent-browser CLI..." -ForegroundColor Cyan
+    $agentBrowserDir = Join-Path $ProjectDir "src-tauri\resources\agent-browser-cli"
+    $lockfileDir = Join-Path $ProjectDir "src\server\agent-browser-lockfile"
+    # 版本一致性校验：index.ts 的 AGENT_BROWSER_VERSION 必须与 lockfile 的 package.json 一致
+    $indexTs = Get-Content (Join-Path $ProjectDir "src\server\index.ts") -Raw
+    if ($indexTs -match "const AGENT_BROWSER_VERSION = '([^']+)'") {
+        $codeVersion = $Matches[1]
+    } else {
+        throw "无法从 index.ts 读取 AGENT_BROWSER_VERSION"
+    }
+    $lockPkg = Get-Content (Join-Path $lockfileDir "package.json") -Raw | ConvertFrom-Json
+    $lockVersion = $lockPkg.dependencies.'agent-browser'
+    if ($codeVersion -ne $lockVersion) {
+        throw "版本不一致! index.ts: $codeVersion, lockfile: $lockVersion — 请同步更新 src/server/agent-browser-lockfile/"
+    }
+    Write-Host "  版本: $codeVersion" -ForegroundColor Cyan
+    if (Test-Path $agentBrowserDir) {
+        Remove-Item -Recurse -Force $agentBrowserDir
+    }
+    New-Item -ItemType Directory -Path $agentBrowserDir -Force | Out-Null
+    # 复制预生成的 package.json + bun.lock（跳过依赖解析，秒级安装）
+    Copy-Item (Join-Path $lockfileDir "package.json") $agentBrowserDir -Force
+    Copy-Item (Join-Path $lockfileDir "bun.lock") $agentBrowserDir -Force
+    Push-Location $agentBrowserDir
+    & bun install --frozen-lockfile --ignore-scripts
+    Pop-Location
+    if ($LASTEXITCODE -ne 0) {
+        throw "agent-browser 预装失败"
+    }
+    # npm 包内含全平台 native binary，仅保留 win32 的（删除 darwin/linux）
+    $abBinDir = Join-Path $agentBrowserDir "node_modules\agent-browser\bin"
+    Get-ChildItem -Path $abBinDir -Filter "agent-browser-darwin-*" -ErrorAction SilentlyContinue | Remove-Item -Force
+    Get-ChildItem -Path $abBinDir -Filter "agent-browser-linux-*" -ErrorAction SilentlyContinue | Remove-Item -Force
+    # 验证非 win32 二进制已全部删除
+    $leaked = Get-ChildItem -Path $abBinDir -Filter "agent-browser-*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "agent-browser-win32-*" -and $_.Name -ne "agent-browser.js" }
+    if ($leaked) {
+        throw "删除非 win32 agent-browser 二进制失败: $($leaked.Name -join ', ')"
+    }
+    # 验证 native binary 存在
+    $nativeBin = Join-Path $abBinDir "agent-browser-win32-x64.exe"
+    if (-not (Test-Path $nativeBin)) {
+        throw "agent-browser native binary 不存在: agent-browser-win32-x64.exe"
+    }
+    Write-Host "    OK - agent-browser CLI 预装完成 (含 native binary)" -ForegroundColor Green
+
     # 构建前端 (增加内存限制避免 OOM)
     Write-Host "  构建前端..." -ForegroundColor Cyan
     $env:NODE_OPTIONS = "--max-old-space-size=4096"

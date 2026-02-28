@@ -338,6 +338,103 @@ impl TelegramAdapter {
         }
     }
 
+    /// Multipart API call for file uploads (sendPhoto, sendDocument).
+    async fn api_call_multipart(
+        &self,
+        method: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<Value, TelegramError> {
+        let resp = self
+            .client
+            .post(&self.api_url(method))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    TelegramError::NetworkTimeout
+                } else {
+                    TelegramError::Other(format!("HTTP error: {}", e))
+                }
+            })?;
+
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+
+        if status.as_u16() == 429 {
+            let retry_after = serde_json::from_str::<Value>(&body_text)
+                .ok()
+                .and_then(|v| v["parameters"]["retry_after"].as_u64())
+                .unwrap_or(5);
+            ulog_warn!("[telegram] Rate limited on {}, retry after {}s", method, retry_after);
+            sleep(Duration::from_secs(retry_after)).await;
+            // Retry not possible (Form consumed), return error
+            return Err(TelegramError::Other(format!("Rate limited on {}", method)));
+        }
+
+        let json: Value = serde_json::from_str(&body_text)
+            .map_err(|e| TelegramError::Other(format!("JSON parse error: {}", e)))?;
+
+        if json["ok"].as_bool() == Some(true) {
+            return Ok(json["result"].clone());
+        }
+
+        let description = json["description"].as_str().unwrap_or("Unknown error");
+        Err(TelegramError::Other(format!("API error on {}: {}", method, description)))
+    }
+
+    /// Send a photo to a chat. Returns the sent message ID.
+    pub async fn send_photo_media(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> Result<Option<i64>, TelegramError> {
+        let mime = super::util::ext_to_mime(filename);
+        let photo_part = reqwest::multipart::Part::bytes(data)
+            .file_name(filename.to_string())
+            .mime_str(mime)
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()));
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("photo", photo_part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let result = self.api_call_multipart("sendPhoto", form).await?;
+        Ok(result["message_id"].as_i64())
+    }
+
+    /// Send a document/file to a chat. Returns the sent message ID.
+    pub async fn send_document_media(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> Result<Option<i64>, TelegramError> {
+        let doc_part = reqwest::multipart::Part::bytes(data)
+            .file_name(filename.to_string())
+            .mime_str(mime_type)
+            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()));
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", doc_part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let result = self.api_call_multipart("sendDocument", form).await?;
+        Ok(result["message_id"].as_i64())
+    }
+
     /// Verify bot token and get bot info
     pub async fn get_me(&self) -> Result<Value, TelegramError> {
         let result = self.api_call("getMe", &json!({})).await?;
@@ -1392,6 +1489,33 @@ impl super::adapter::ImStreamAdapter for TelegramAdapter {
     ) -> super::adapter::AdapterResult<()> {
         self.update_approval_status(chat_id, message_id, status)
             .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn send_photo(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> super::adapter::AdapterResult<Option<String>> {
+        self.send_photo_media(chat_id, data, filename, caption)
+            .await
+            .map(|opt_id| opt_id.map(|id| id.to_string()))
+            .map_err(|e| e.to_string())
+    }
+
+    async fn send_file(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> super::adapter::AdapterResult<Option<String>> {
+        self.send_document_media(chat_id, data, filename, mime_type, caption)
+            .await
+            .map(|opt_id| opt_id.map(|id| id.to_string()))
             .map_err(|e| e.to_string())
     }
 }

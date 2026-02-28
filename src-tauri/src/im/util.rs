@@ -30,6 +30,26 @@ pub(super) fn mime_to_ext(mime: &str) -> &str {
     }
 }
 
+/// Map file extension to MIME type (reverse of mime_to_ext).
+pub(super) fn ext_to_mime(filename: &str) -> &str {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/m4a",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Sanitize a filename to prevent path traversal attacks.
 /// Strips path separators, `.` and `..` components, and null bytes.
 pub(super) fn sanitize_filename(name: &str) -> String {

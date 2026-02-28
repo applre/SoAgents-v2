@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, useRef, memo } from 'react';
 import { arrayMove } from '@dnd-kit/sortable';
 
 import { initAnalytics, track } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, resetGlobalSidecarReadyPromise, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, sessionHasPersistentOwners } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, sessionHasPersistentOwners } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomTitleBar from '@/components/CustomTitleBar';
 import TabBar from '@/components/TabBar';
@@ -21,6 +21,7 @@ import { type Tab, type InitialMessage, createNewTab, getFolderName, MAX_TABS } 
 import { getAllCronTasks, getTabCronTask, updateCronTaskTab } from '@/api/cronTaskClient';
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
+import { apiGetJson, apiPostJson } from '@/api/apiFetch';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
 
@@ -171,6 +172,13 @@ export default function App() {
     resolve: (value: boolean) => void;
   } | null>(null);
 
+  // Claude settings env override warning (cc-switch etc.)
+  const [claudeEnvOverride, setClaudeEnvOverride] = useState<{
+    baseUrl?: string;
+    hasApiKey: boolean;
+  } | null>(null);
+  const [claudeEnvClearing, setClaudeEnvClearing] = useState(false);
+
   // Per-tab launch guard — prevents concurrent launches overwriting each other's state
   const launchingTabRef = useRef<string | null>(null);
 
@@ -185,11 +193,11 @@ export default function App() {
     const BASE_DELAY = 2000; // 2 seconds
 
     try {
-      // Reset and reinitialize the ready promise for retry
-      if (retryCountRef.current > 0) {
-        resetGlobalSidecarReadyPromise();
-        initGlobalSidecarReadyPromise();
-      }
+      // NOTE: Do NOT reset the ready promise on retry.
+      // Existing waiters (useTaskCenterData etc.) hold a reference to the original promise.
+      // Resetting it would orphan those waiters — they'd wait for a dead promise until
+      // the 60s timeout expires, even if the sidecar is already running.
+      // Keep the original promise; markGlobalSidecarReady() resolves it for ALL waiters.
 
       await startGlobalSidecar();
 
@@ -353,6 +361,26 @@ export default function App() {
       void stopAllSidecars();
     };
   }, [startGlobalSidecarSilent]);
+
+  // Check ~/.claude/settings.json for env overrides on startup
+  // External tools (cc-switch etc.) may write ANTHROPIC_BASE_URL which overrides all providers
+  useEffect(() => {
+    const checkClaudeEnvOverrides = async () => {
+      try {
+        const result = await apiGetJson<{
+          hasOverrides: boolean;
+          baseUrl?: string;
+          hasApiKey: boolean;
+        }>('/api/claude-settings/check-env');
+        if (result.hasOverrides) {
+          setClaudeEnvOverride({ baseUrl: result.baseUrl, hasApiKey: result.hasApiKey });
+        }
+      } catch {
+        // Silently ignore — non-critical check
+      }
+    };
+    void checkClaudeEnvOverrides();
+  }, []);
 
   // Update tab isGenerating state (called from TabProvider via callback)
   const updateTabGenerating = useCallback((tabId: string, isGenerating: boolean) => {
@@ -1352,6 +1380,30 @@ export default function App() {
             void restartAndUpdate();
           }}
           onCancel={dismissPendingUpdate}
+        />
+      )}
+
+      {/* Warning: ~/.claude/settings.json env overrides detected */}
+      {claudeEnvOverride && (
+        <ConfirmDialog
+          title="检测到全局配置覆盖"
+          message={`~/.claude/settings.json 中检测到${claudeEnvOverride.baseUrl ? ` ANTHROPIC_BASE_URL = ${claudeEnvOverride.baseUrl.length > 60 ? claudeEnvOverride.baseUrl.slice(0, 60) + '...' : claudeEnvOverride.baseUrl}` : ''}${claudeEnvOverride.baseUrl && claudeEnvOverride.hasApiKey ? '，' : ''}${claudeEnvOverride.hasApiKey ? 'ANTHROPIC_API_KEY' : ''}，该配置会覆盖 MyAgents 的供应商设置，导致所有请求发送到非预期地址。是否清除？`}
+          confirmText="清除"
+          cancelText="取消"
+          confirmVariant="danger"
+          loading={claudeEnvClearing}
+          onConfirm={() => {
+            setClaudeEnvClearing(true);
+            void apiPostJson('/api/claude-settings/clear-env', {}).then(() => {
+              setClaudeEnvOverride(null);
+            }).catch((err) => {
+              console.error('[App] Failed to clear claude settings env:', err);
+              setClaudeEnvOverride(null);
+            }).finally(() => {
+              setClaudeEnvClearing(false);
+            });
+          }}
+          onCancel={() => setClaudeEnvOverride(null)}
         />
       )}
     </div>

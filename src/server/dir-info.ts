@@ -25,9 +25,9 @@ const DEFAULT_IGNORES = new Set(['.git', 'node_modules', 'out', 'dist', 'tmp']);
 const DEFAULT_INFO_MAX_DEPTH = 3;
 const DEFAULT_INFO_MAX_ENTRIES = 500;
 const DEFAULT_TREE_MAX_DEPTH = 6;
-const DEFAULT_TREE_MAX_ENTRIES = 2000;
+const DEFAULT_TREE_MAX_ENTRIES = 50000;
 const DEFAULT_EXPAND_MAX_DEPTH = 3;
-const DEFAULT_EXPAND_MAX_ENTRIES = 500;
+const DEFAULT_EXPAND_MAX_ENTRIES = 1000;
 
 export async function buildDirectoryInfo(
   root: string,

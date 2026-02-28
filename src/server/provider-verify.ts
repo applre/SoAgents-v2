@@ -139,8 +139,17 @@ async function verifyViaSdk(
           continue;
         }
 
-        // assistant message also confirms API responded
+        // assistant message: check for SDK-wrapped errors first.
+        // When API returns 403/401, SDK wraps it as a synthetic assistant message
+        // with an `error` field (e.g. "authentication_failed"). Without this check,
+        // verification would falsely report success.
         if (message.type === 'assistant') {
+          const assistantMsg = message as { error?: string; message?: { content?: Array<{ text?: string }> } };
+          if (assistantMsg.error) {
+            const errorDetail = assistantMsg.message?.content?.[0]?.text ?? assistantMsg.error;
+            console.error(`[${logPrefix}] auth error: ${errorDetail}`);
+            return { success: false, error: parseError(errorDetail.toLowerCase()) };
+          }
           const elapsed = Date.now() - startTime;
           console.log(`[${logPrefix}] verification successful (${elapsed}ms)`);
           return { success: true };

@@ -15,6 +15,8 @@ use crate::cron_task::{
     self, CronDelivery, CronSchedule, CronTask, CronTaskConfig, TaskProviderEnv,
 };
 use crate::im::{self, ManagedImBots};
+use crate::im::adapter::ImStreamAdapter;
+use crate::im::types::MediaType;
 
 /// Global management API port (set once at startup)
 static MANAGEMENT_PORT: OnceLock<u16> = OnceLock::new();
@@ -60,7 +62,8 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cron/run", post(run_cron_handler))
         .route("/api/cron/runs", get(runs_cron_handler))
         .route("/api/cron/status", get(status_cron_handler))
-        .route("/api/im/wake", post(wake_bot_handler));
+        .route("/api/im/wake", post(wake_bot_handler))
+        .route("/api/im/send-media", post(send_media_handler));
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -412,5 +415,122 @@ async fn wake_bot_handler(
         }
     } else {
         Json(serde_json::json!({ "ok": false, "error": "Heartbeat not configured for this bot" }))
+    }
+}
+
+// ===== Send Media handler =====
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct SendMediaRequest {
+    bot_id: String,
+    chat_id: String,
+    platform: String,
+    file_path: String,
+    caption: Option<String>,
+}
+
+async fn send_media_handler(
+    Json(req): Json<SendMediaRequest>,
+) -> Json<serde_json::Value> {
+    let bots = match get_im_bots() {
+        Some(b) => b,
+        None => return Json(serde_json::json!({
+            "ok": false, "error": "IM state not available"
+        })),
+    };
+
+    // Get adapter from the bot instance (clone Arc, drop lock early)
+    let adapter: std::sync::Arc<im::AnyAdapter> = {
+        let bots_guard = bots.lock().await;
+        match bots_guard.get(&req.bot_id) {
+            Some(instance) => std::sync::Arc::clone(&instance.adapter),
+            None => return Json(serde_json::json!({
+                "ok": false, "error": format!("Bot not found: {}", req.bot_id)
+            })),
+        }
+    }; // bots_guard dropped here
+
+    // Read the file
+    let path = std::path::Path::new(&req.file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    let data = match tokio::fs::read(&req.file_path).await {
+        Ok(d) => d,
+        Err(e) => return Json(serde_json::json!({
+            "ok": false, "error": format!("File not found or unreadable: {}", e)
+        })),
+    };
+
+    let data_len = data.len() as u64;
+    let media_type = MediaType::from_extension(ext);
+
+    match media_type {
+        MediaType::Image => {
+            let size_limit: u64 = 10 * 1024 * 1024;
+            if data_len > size_limit {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Image too large: {:.1} MB (max 10 MB)", data_len as f64 / (1024.0 * 1024.0))
+                }));
+            }
+            log::info!("[send-media] Sending image: {} ({} bytes) to {}", filename, data_len, req.chat_id);
+            match adapter.send_photo(&req.chat_id, data, &filename, req.caption.as_deref()).await {
+                Ok(_) => Json(serde_json::json!({
+                    "ok": true, "fileName": filename, "fileSize": data_len
+                })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false, "error": format!("Failed to send photo: {}", e)
+                })),
+            }
+        }
+        MediaType::File => {
+            let size_limit: u64 = 50 * 1024 * 1024;
+            if data_len > size_limit {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("File too large: {:.1} MB (max 50 MB)", data_len as f64 / (1024.0 * 1024.0))
+                }));
+            }
+            let mime = match ext.to_lowercase().as_str() {
+                "pdf" => "application/pdf",
+                "doc" | "docx" => "application/msword",
+                "xls" | "xlsx" => "application/vnd.ms-excel",
+                "ppt" | "pptx" => "application/vnd.ms-powerpoint",
+                "mp4" => "video/mp4",
+                "mp3" => "audio/mpeg",
+                "zip" => "application/zip",
+                "csv" => "text/csv",
+                "json" => "application/json",
+                "xml" => "application/xml",
+                "html" => "text/html",
+                "txt" => "text/plain",
+                _ => "application/octet-stream",
+            };
+            log::info!("[send-media] Sending file: {} ({} bytes, {}) to {}", filename, data_len, mime, req.chat_id);
+            match adapter.send_file(&req.chat_id, data, &filename, mime, req.caption.as_deref()).await {
+                Ok(_) => Json(serde_json::json!({
+                    "ok": true, "fileName": filename, "fileSize": data_len
+                })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false, "error": format!("Failed to send file: {}", e)
+                })),
+            }
+        }
+        MediaType::NonMedia => {
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Unsupported file type: .{} — only images, documents, media, and archives can be sent", ext)
+            }))
+        }
     }
 }

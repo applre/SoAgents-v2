@@ -108,4 +108,23 @@ pub trait ImStreamAdapter: ImAdapter {
         message_id: &str,
         status: &str,
     ) -> impl std::future::Future<Output = AdapterResult<()>> + Send;
+
+    /// Send a photo/image to the given chat. Returns the sent message ID if available.
+    fn send_photo(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> impl std::future::Future<Output = AdapterResult<Option<String>>> + Send;
+
+    /// Send a file/document to the given chat. Returns the sent message ID if available.
+    fn send_file(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> impl std::future::Future<Output = AdapterResult<Option<String>>> + Send;
 }

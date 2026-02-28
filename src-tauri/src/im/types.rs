@@ -118,6 +118,39 @@ pub enum GroupEvent {
     },
 }
 
+/// Media type classification for outbound file sending
+#[derive(Debug, Clone, PartialEq)]
+pub enum MediaType {
+    /// Image formats: jpg, jpeg, png, gif, webp, bmp, svg
+    Image,
+    /// Document/media formats: pdf, doc(x), xls(x), ppt(x), mp4, mp3, ogg, wav, zip, csv, json, xml, html
+    File,
+    /// Code and other non-media files: ts, js, py, rs, etc. — not sent as media
+    NonMedia,
+}
+
+impl MediaType {
+    /// Classify a file extension into a media type for outbound sending.
+    pub fn from_extension(ext: &str) -> Self {
+        match ext.to_lowercase().as_str() {
+            // Images
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "svg" => Self::Image,
+            // Documents & media files
+            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
+            | "mp4" | "mp3" | "ogg" | "wav" | "avi" | "mov" | "mkv"
+            | "zip" | "rar" | "7z" | "tar" | "gz"
+            | "csv" | "json" | "xml" | "html" | "txt" => Self::File,
+            // Everything else (code files, etc.)
+            _ => Self::NonMedia,
+        }
+    }
+
+    /// Check if a file extension is a sendable media type (Image or File).
+    pub fn is_media_extension(ext: &str) -> bool {
+        !matches!(Self::from_extension(ext), Self::NonMedia)
+    }
+}
+
 /// Attachment type determines processing path
 #[derive(Debug, Clone)]
 pub enum ImAttachmentType {

@@ -167,6 +167,31 @@ impl adapter::ImStreamAdapter for AnyAdapter {
             Self::Feishu(a) => a.update_approval_status(message_id, status).await,
         }
     }
+    async fn send_photo(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        caption: Option<&str>,
+    ) -> adapter::AdapterResult<Option<String>> {
+        match self {
+            Self::Telegram(a) => a.send_photo(chat_id, data, filename, caption).await,
+            Self::Feishu(a) => a.send_photo(chat_id, data, filename, caption).await,
+        }
+    }
+    async fn send_file(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> adapter::AdapterResult<Option<String>> {
+        match self {
+            Self::Telegram(a) => a.send_file(chat_id, data, filename, mime_type, caption).await,
+            Self::Feishu(a) => a.send_file(chat_id, data, filename, mime_type, caption).await,
+        }
+    }
 }
 
 /// Managed state for the IM Bot subsystem (multi-bot: bot_id → instance)
@@ -203,7 +228,7 @@ pub struct ImBotInstance {
     /// Shared heartbeat config (for hot updates)
     heartbeat_config: Option<Arc<tokio::sync::RwLock<types::HeartbeatConfig>>>,
     /// Platform adapter (retained for graceful shutdown — e.g. dedup flush)
-    adapter: Arc<AnyAdapter>,
+    pub(crate) adapter: Arc<AnyAdapter>,
     // ===== Hot-reloadable config =====
     pub(crate) current_model: Arc<tokio::sync::RwLock<Option<String>>>,
     pub(crate) current_provider_env: Arc<tokio::sync::RwLock<Option<serde_json::Value>>>,

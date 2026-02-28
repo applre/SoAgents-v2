@@ -873,6 +873,154 @@ impl FeishuAdapter {
         Ok(msg_id)
     }
 
+    /// Upload an image to Feishu and return the image_key.
+    /// Two-step process: upload → get key, then use key to send message.
+    async fn upload_image(&self, data: Vec<u8>, filename: &str) -> Result<String, String> {
+        let url = format!("{}/im/v1/images", FEISHU_API_BASE);
+        let mut retries = 0;
+
+        loop {
+            let token = self.get_token().await?;
+
+            let image_part = reqwest::multipart::Part::bytes(data.clone())
+                .file_name(filename.to_string())
+                .mime_str("application/octet-stream")
+                .map_err(|e| format!("Failed to create multipart: {}", e))?;
+
+            let form = reqwest::multipart::Form::new()
+                .text("image_type", "message")
+                .part("image", image_part);
+
+            let resp = self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .multipart(form)
+                .send()
+                .await
+                .map_err(|e| format!("Image upload failed: {}", e))?;
+
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+
+            // Handle 401 — refresh token and retry once
+            if status.as_u16() == 401 && retries == 0 {
+                ulog_warn!("[feishu] Got 401 on image upload, refreshing token");
+                { let mut cache = self.token_cache.write().await; *cache = None; }
+                retries += 1;
+                continue;
+            }
+
+            let json: Value = serde_json::from_str(&text)
+                .map_err(|e| format!("Image upload response parse error: {}", e))?;
+
+            let code = json["code"].as_i64().unwrap_or(-1);
+            if code != 0 {
+                return Err(format!("Image upload error {}: {}", code, json["msg"].as_str().unwrap_or("unknown")));
+            }
+
+            let image_key = json["data"]["image_key"]
+                .as_str()
+                .ok_or_else(|| "No image_key in upload response".to_string())?
+                .to_string();
+
+            ulog_info!("[feishu] Image uploaded: {} → {}", filename, image_key);
+            return Ok(image_key);
+        }
+    }
+
+    /// Upload a file to Feishu and return the file_key.
+    async fn upload_file(&self, data: Vec<u8>, filename: &str, file_type: &str) -> Result<String, String> {
+        let url = format!("{}/im/v1/files", FEISHU_API_BASE);
+        let mut retries = 0;
+
+        loop {
+            let token = self.get_token().await?;
+
+            let file_part = reqwest::multipart::Part::bytes(data.clone())
+                .file_name(filename.to_string())
+                .mime_str("application/octet-stream")
+                .map_err(|e| format!("Failed to create multipart: {}", e))?;
+
+            let form = reqwest::multipart::Form::new()
+                .text("file_type", file_type.to_string())
+                .text("file_name", filename.to_string())
+                .part("file", file_part);
+
+            let resp = self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .multipart(form)
+                .send()
+                .await
+                .map_err(|e| format!("File upload failed: {}", e))?;
+
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+
+            if status.as_u16() == 401 && retries == 0 {
+                ulog_warn!("[feishu] Got 401 on file upload, refreshing token");
+                { let mut cache = self.token_cache.write().await; *cache = None; }
+                retries += 1;
+                continue;
+            }
+
+            let json: Value = serde_json::from_str(&text)
+                .map_err(|e| format!("File upload response parse error: {}", e))?;
+
+            let code = json["code"].as_i64().unwrap_or(-1);
+            if code != 0 {
+                return Err(format!("File upload error {}: {}", code, json["msg"].as_str().unwrap_or("unknown")));
+            }
+
+            let file_key = json["data"]["file_key"]
+                .as_str()
+                .ok_or_else(|| "No file_key in upload response".to_string())?
+                .to_string();
+
+            ulog_info!("[feishu] File uploaded: {} → {}", filename, file_key);
+            return Ok(file_key);
+        }
+    }
+
+    /// Send an image message using a previously uploaded image_key.
+    async fn send_image_message(&self, chat_id: &str, image_key: &str) -> Result<Option<String>, String> {
+        let url = format!("{}/im/v1/messages?receive_id_type=chat_id", FEISHU_API_BASE);
+        let content = serde_json::to_string(&json!({ "image_key": image_key })).unwrap_or_default();
+        let body = json!({
+            "receive_id": chat_id,
+            "msg_type": "image",
+            "content": content,
+        });
+        let resp = self.api_call("POST", &url, Some(&body)).await?;
+        Ok(resp["data"]["message_id"].as_str().map(String::from))
+    }
+
+    /// Send a file message using a previously uploaded file_key.
+    async fn send_file_message(&self, chat_id: &str, file_key: &str) -> Result<Option<String>, String> {
+        let url = format!("{}/im/v1/messages?receive_id_type=chat_id", FEISHU_API_BASE);
+        let content = serde_json::to_string(&json!({ "file_key": file_key })).unwrap_or_default();
+        let body = json!({
+            "receive_id": chat_id,
+            "msg_type": "file",
+            "content": content,
+        });
+        let resp = self.api_call("POST", &url, Some(&body)).await?;
+        Ok(resp["data"]["message_id"].as_str().map(String::from))
+    }
+
+    /// Map file extension to Feishu file_type parameter.
+    fn ext_to_feishu_file_type(ext: &str) -> &'static str {
+        match ext.to_lowercase().as_str() {
+            "pdf" => "pdf",
+            "doc" | "docx" => "doc",
+            "xls" | "xlsx" => "xls",
+            "ppt" | "pptx" => "ppt",
+            "mp4" | "avi" | "mov" | "mkv" => "mp4",
+            "mp3" | "ogg" | "wav" => "mp3",
+            _ => "stream",
+        }
+    }
+
     /// Edit an existing message with rich-text (post) content.
     /// Uses PUT (not PATCH — PATCH is for message cards only).
     /// Automatically converts Markdown to Feishu Post format.
@@ -1884,5 +2032,33 @@ impl super::adapter::ImStreamAdapter for FeishuAdapter {
         status: &str,
     ) -> super::adapter::AdapterResult<()> {
         self.update_approval_status(message_id, status).await
+    }
+
+    async fn send_photo(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        _caption: Option<&str>,
+    ) -> super::adapter::AdapterResult<Option<String>> {
+        let image_key = self.upload_image(data, filename).await?;
+        self.send_image_message(chat_id, &image_key).await
+    }
+
+    async fn send_file(
+        &self,
+        chat_id: &str,
+        data: Vec<u8>,
+        filename: &str,
+        _mime_type: &str,
+        _caption: Option<&str>,
+    ) -> super::adapter::AdapterResult<Option<String>> {
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("stream");
+        let file_type = Self::ext_to_feishu_file_type(ext);
+        let file_key = self.upload_file(data, filename, file_type).await?;
+        self.send_file_message(chat_id, &file_key).await
     }
 }

@@ -13,6 +13,8 @@ use std::sync::Once;
 use std::thread;
 use std::time::Duration;
 
+use crate::{ulog_info, ulog_error};
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -78,12 +80,16 @@ fn ensure_high_file_descriptor_limit() {
 
 // Configuration constants
 const BASE_PORT: u16 = 31415;
-// Health check: 60 attempts × 100ms = 6 seconds total (optimized for faster startup)
-const HEALTH_CHECK_MAX_ATTEMPTS: u32 = 60;
-const HEALTH_CHECK_DELAY_MS: u64 = 100;
+// Health check: 600 attempts × 500ms ≈ 5 min upper bound.
+// In practice localhost TCP fails instantly (~1ms), so real wall-time ≈ 600 × 500ms = 5 min.
+// The generous limit accommodates Windows Defender first-run scanning of bun.exe,
+// which can hold the process for 20-30s before any code executes.
+const HEALTH_CHECK_MAX_ATTEMPTS: u32 = 600;
+const HEALTH_CHECK_DELAY_MS: u64 = 500;
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 100;
 // HTTP health check for existing sidecar - shorter timeout since sidecar should respond immediately
 const HTTP_HEALTH_CHECK_TIMEOUT_MS: u64 = 500;
+#[cfg(unix)]
 const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 // Port range: 500 ports (31415-31914)
 const PORT_RANGE: u16 = 500;
@@ -148,8 +154,9 @@ pub fn cleanup_stale_sidecars() {
         kill_windows_processes_by_pattern(".myagents\\mcp\\");
 
         // 4. Clean up MCP servers launched via bun x / npx
-        kill_windows_processes_by_pattern("@playwright\\mcp");
-        kill_windows_processes_by_pattern("@anthropic-ai\\mcp");
+        // npm package names use forward slashes even on Windows
+        kill_windows_processes_by_pattern("@playwright/mcp");
+        kill_windows_processes_by_pattern("@anthropic-ai/mcp");
 
         // Verify cleanup completed (max 1 second wait)
         let start = std::time::Instant::now();
@@ -516,6 +523,27 @@ impl SidecarManager {
         self.instances.iter()
     }
 
+    /// Get all unique ports of running Sidecars (session-centric + legacy global).
+    /// Used for broadcasting config changes (e.g. proxy hot-reload) to all Sidecars.
+    pub fn get_all_active_ports(&mut self) -> Vec<u16> {
+        let mut ports = Vec::new();
+        // Session-centric sidecars (Tab/CronTask/BackgroundCompletion)
+        for sc in self.sidecars.values_mut() {
+            if sc.is_running() {
+                ports.push(sc.port);
+            }
+        }
+        // Legacy instances (Global Sidecar)
+        for inst in self.instances.values_mut() {
+            if inst.is_running() {
+                ports.push(inst.port);
+            }
+        }
+        ports.sort();
+        ports.dedup();
+        ports
+    }
+
     /// Stop all instances (session sidecars and global sidecar)
     pub fn stop_all(&mut self) {
         log::info!(
@@ -862,13 +890,20 @@ fn kill_process(child: &mut Child) -> std::io::Result<()> {
     // This ensures we don't block the caller (important for UI responsiveness)
     // The thread will force kill if the process doesn't exit within timeout
     std::thread::spawn(move || {
-        let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-        let start = std::time::Instant::now();
+        #[cfg(windows)]
+        {
+            // taskkill /T /F already synchronously terminated the process tree,
+            // no need for background polling on Windows
+            let _ = pid; // suppress unused variable
+            return;
+        }
 
-        loop {
-            // Check if process has exited
-            #[cfg(unix)]
-            {
+        #[cfg(unix)]
+        {
+            let timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+            let start = std::time::Instant::now();
+
+            loop {
                 // Use waitpid with WNOHANG to check without blocking
                 let mut status: i32 = 0;
                 let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
@@ -885,26 +920,15 @@ fn kill_process(child: &mut Child) -> std::io::Result<()> {
                     return;
                 }
                 // result == 0 means process still running
-            }
-            #[cfg(windows)]
-            {
-                // taskkill /T /F already synchronously terminated the process tree,
-                // no need for background polling on Windows
-                return;
-            }
 
-            if start.elapsed() > timeout {
-                log::warn!("[sidecar] Process {} didn't exit after SIGTERM, force killing process group", pid);
-                #[cfg(unix)]
-                {
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
+                if start.elapsed() > timeout {
+                    log::warn!("[sidecar] Process {} didn't exit after SIGTERM, force killing process group", pid);
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+                    return;
                 }
-                return;
-            }
 
-            thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(50));
+            }
         }
     });
 
@@ -914,6 +938,24 @@ fn kill_process(child: &mut Child) -> std::io::Result<()> {
 /// Check if a port is available
 fn is_port_available(port: u16) -> bool {
     std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok()
+}
+
+/// Normalize a path for use with external processes.
+///
+/// On Windows, Tauri's `resource_dir()` and Rust's `current_exe()` / `canonicalize()`
+/// return paths with the `\\?\` extended-length prefix. Most external tools (Bun, Node,
+/// npm) cannot handle this prefix — they silently hang or fail.
+///
+/// This function strips the prefix on Windows; on other platforms it's a no-op.
+fn normalize_external_path(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix("\\\\?\\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
 }
 
 /// Helper: check if bun exists at the given directory with platform-specific names
@@ -932,8 +974,13 @@ fn check_bun_in_dir(dir: &std::path::Path, label: &str) -> Option<PathBuf> {
     None
 }
 
-/// Find the bun executable path
+/// Find the bun executable path.
+/// Returns a normalized path safe for `Command::new()` (no `\\?\` prefix on Windows).
 fn find_bun_executable<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    find_bun_executable_inner(app_handle).map(normalize_external_path)
+}
+
+fn find_bun_executable_inner<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
     // First, try to find bundled bun via resource_dir
     match app_handle.path().resource_dir() {
         Ok(resource_dir) => {
@@ -1098,8 +1145,13 @@ fn find_bun_executable<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf>
     }
 }
 
-/// Find the server script path
-fn find_server_script<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf> {
+/// Find the server script path.
+/// Returns a normalized path safe for `Command::new()` (no `\\?\` prefix on Windows).
+fn find_server_script<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    find_server_script_inner(app_handle).map(normalize_external_path)
+}
+
+fn find_server_script_inner<R: Runtime>(_app_handle: &AppHandle<R>) -> Option<PathBuf> {
     // 1. First check for bundled server-dist.js (Production)
     // Modified: Only check bundled script in Release mode, so Dev mode uses source
     #[cfg(debug_assertions)]
@@ -1268,6 +1320,9 @@ pub fn start_tab_sidecar<R: Runtime>(
 
     // Determine if this is a global sidecar and handle agent directory
     let is_global = agent_dir.is_none();
+    if is_global {
+        cmd.arg("--no-pre-warm");
+    }
     let effective_agent_dir = if let Some(ref dir) = agent_dir {
         cmd.arg("--agent-dir").arg(dir);
         Some(dir.clone())
@@ -1372,9 +1427,9 @@ pub fn start_tab_sidecar<R: Runtime>(
     }
 
     // 关键诊断日志：打印当前可执行文件路径，确认运行的是正确版本
-    log::info!("[sidecar] current_exe = {:?}", std::env::current_exe().ok());
+    ulog_info!("[sidecar] current_exe = {:?}", std::env::current_exe().ok());
 
-    log::info!(
+    ulog_info!(
         "[sidecar] Spawning: bun={:?}, script={:?}, port={}, is_global={}",
         bun_path, script_path, port, is_global
     );
@@ -1385,26 +1440,26 @@ pub fn start_tab_sidecar<R: Runtime>(
         format!("Failed to spawn sidecar: {}", e)
     })?;
 
-    log::info!("[sidecar] Process spawned with pid: {:?}", child.id());
+    ulog_info!("[sidecar] Process spawned with pid: {:?}", child.id());
 
-    // 启动线程捕获 stdout
+    // 启动线程捕获 stdout → 写入统一日志（确保 Bun 输出在 unified log 可见）
     if let Some(stdout) = child.stdout.take() {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                log::info!("[bun-out][{}] {}", tab_id_clone, line);
+                ulog_info!("[bun-out][{}] {}", tab_id_clone, line);
             }
         });
     }
 
-    // 启动线程捕获 stderr（关键：这里会打印 Bun 的错误信息）
+    // 启动线程捕获 stderr → 写入统一日志
     if let Some(stderr) = child.stderr.take() {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().flatten() {
-                log::error!("[bun-err][{}] {}", tab_id_clone, line);
+                ulog_error!("[bun-err][{}] {}", tab_id_clone, line);
             }
         });
     }
@@ -1444,39 +1499,38 @@ pub fn start_tab_sidecar<R: Runtime>(
             Ok(port)
         }
         Err(e) => {
-            // Health check failed - try to get process output for debugging
-            log::error!("[sidecar] Health check failed: {}", e);
-            
-            // Try to get the instance and check if process is still running
+            // Health check failed — diagnostics go to unified log directly
+            ulog_error!("[sidecar] Health check failed: {}", e);
+            let mut diag = e.clone();
+
             let mut manager_guard = manager.lock().map_err(|_| e.clone())?;
             if let Some(instance) = manager_guard.get_instance_mut(tab_id) {
-                // Check if process has exited
                 match instance.process.try_wait() {
                     Ok(Some(status)) => {
-                        log::error!("[sidecar] Process exited with status: {:?}", status);
+                        let detail = format!(" | process exited: {:?}", status);
+                        ulog_error!("[sidecar]{}", detail);
+                        diag.push_str(&detail);
                     }
                     Ok(None) => {
-                        log::error!("[sidecar] Process still running but not healthy");
+                        let detail = " | process alive but not listening";
+                        ulog_error!("[sidecar]{}", detail);
+                        diag.push_str(detail);
                     }
                     Err(wait_err) => {
-                        log::error!("[sidecar] Failed to check process status: {}", wait_err);
+                        let detail = format!(" | try_wait error: {}", wait_err);
+                        ulog_error!("[sidecar]{}", detail);
+                        diag.push_str(&detail);
                     }
                 }
-                
-                // Try to read stderr if available
-                if let Some(ref mut stderr) = instance.process.stderr.take() {
-                    use std::io::Read;
-                    let mut output = String::new();
-                    if stderr.read_to_string(&mut output).is_ok() && !output.is_empty() {
-                        log::error!("[sidecar] Process stderr: {}", output);
-                    }
-                }
+
+                // Note: stderr is already captured by the drain thread → ulog_error!
+                // No need to .take() here (it was already taken at spawn time)
             }
-            
+
             // Remove the failed instance
             manager_guard.remove_instance(tab_id);
-            
-            Err(e)
+
+            Err(diag)
         }
     }
 }
@@ -1825,14 +1879,14 @@ fn create_new_session_sidecar<R: Runtime>(
         format!("Failed to spawn sidecar: {}", e)
     })?;
 
-    // Capture stdout/stderr for logging
+    // Capture stdout/stderr → 写入统一日志
     let session_id_clone = session_id.to_string();
     if let Some(stdout) = child.stdout.take() {
         let session_id_for_log = session_id_clone.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                log::info!("[bun-out][session:{}] {}", session_id_for_log, line);
+                ulog_info!("[bun-out][session:{}] {}", session_id_for_log, line);
             }
         });
     }
@@ -1842,7 +1896,7 @@ fn create_new_session_sidecar<R: Runtime>(
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().flatten() {
-                log::error!("[bun-err][session:{}] {}", session_id_for_log, line);
+                ulog_error!("[bun-err][session:{}] {}", session_id_for_log, line);
             }
         });
     }
@@ -2445,7 +2499,8 @@ fn kill_windows_processes_by_pattern(pattern: &str) {
     let mut killed = 0;
     for pid in &pids {
         let mut cmd = Command::new("taskkill");
-        cmd.args(["/F", "/PID", &pid.to_string()])
+        // /T = kill process tree (children too), /F = force
+        cmd.args(["/T", "/F", "/PID", &pid.to_string()])
             .creation_flags(CREATE_NO_WINDOW);
         if cmd.output().is_ok() {
             killed += 1;
@@ -2453,7 +2508,7 @@ fn kill_windows_processes_by_pattern(pattern: &str) {
     }
 
     if killed > 0 {
-        log::info!("[sidecar] Killed {} processes matching '{}'", killed, pattern);
+        eprintln!("[sidecar] Killed {} processes (tree) matching '{}'", killed, pattern);
     }
 }
 
@@ -2890,5 +2945,105 @@ pub async fn cmd_execute_cron_task(
     };
 
     execute_cron_task(&app_handle, &state, &workspacePath, payload).await
+}
+
+// ============= Proxy Hot-Reload =============
+
+/// Build the proxy payload from disk config for broadcasting to Sidecars.
+fn build_proxy_payload() -> serde_json::Value {
+    match proxy_config::read_proxy_settings() {
+        Some(s) => match proxy_config::get_proxy_url(&s) {
+            Ok(_) => serde_json::json!({
+                "enabled": true,
+                "protocol": s.protocol.unwrap_or_else(|| "http".into()),
+                "host": s.host.unwrap_or_else(|| "127.0.0.1".into()),
+                "port": s.port.unwrap_or(7890),
+            }),
+            Err(_) => serde_json::json!({ "enabled": false }),
+        },
+        None => serde_json::json!({ "enabled": false }),
+    }
+}
+
+/// POST proxy config to a single Sidecar.
+async fn post_proxy(client: &reqwest::Client, port: u16, payload: &serde_json::Value) -> bool {
+    let url = format!("http://127.0.0.1:{}/api/proxy/set", port);
+    match client.post(&url).json(payload).send().await {
+        Ok(r) if r.status().is_success() => {
+            log::info!("[proxy-propagate] Updated sidecar on port {}", port);
+            true
+        }
+        Ok(r) => {
+            log::warn!("[proxy-propagate] Port {} returned {}", port, r.status());
+            false
+        }
+        Err(e) => {
+            log::warn!("[proxy-propagate] Port {} unreachable: {}", port, e);
+            false
+        }
+    }
+}
+
+/// Propagate proxy settings from disk config to all running Sidecars.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_propagate_proxy(
+    sidecarManager: tauri::State<'_, ManagedSidecarManager>,
+    imState: tauri::State<'_, crate::im::ManagedImBots>,
+) -> Result<serde_json::Value, String> {
+    let payload = build_proxy_payload();
+
+    let client = crate::local_http::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let mut ok = 0u32;
+    let mut fail = 0u32;
+
+    // 1. Tab + Global Sidecars
+    let ports = sidecarManager
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_all_active_ports();
+    for port in &ports {
+        if post_proxy(&client, *port, &payload).await {
+            ok += 1;
+        } else {
+            fail += 1;
+        }
+    }
+
+    // 2. IM Bot Sidecars — collect ports under lock, then release before network I/O
+    let im_ports: Vec<u16> = {
+        let im_guard = imState.lock().await;
+        let mut collected = Vec::new();
+        for (_bot_id, instance) in im_guard.iter() {
+            let router = instance.router.lock().await;
+            for port in router.active_sidecar_ports() {
+                if !ports.contains(&port) {
+                    collected.push(port);
+                }
+            }
+        }
+        collected.sort();
+        collected.dedup();
+        collected
+    }; // Both im_guard and router locks released here
+
+    for port in &im_ports {
+        if post_proxy(&client, *port, &payload).await {
+            ok += 1;
+        } else {
+            fail += 1;
+        }
+    }
+
+    log::info!(
+        "[proxy-propagate] Done: {} updated, {} failed",
+        ok,
+        fail
+    );
+    Ok(serde_json::json!({ "updated": ok, "failed": fail }))
 }
 

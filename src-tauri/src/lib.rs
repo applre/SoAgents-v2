@@ -26,6 +26,8 @@ use sidecar::{
     // Background session completion
     cmd_start_background_completion, cmd_cancel_background_completion,
     cmd_get_background_sessions,
+    // Proxy hot-reload
+    cmd_propagate_proxy,
 };
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -150,6 +152,8 @@ pub fn run() {
             cmd_start_background_completion,
             cmd_cancel_background_completion,
             cmd_get_background_sessions,
+            // Proxy hot-reload
+            cmd_propagate_proxy,
             // IM Bot commands
             im::cmd_start_im_bot,
             im::cmd_stop_im_bot,

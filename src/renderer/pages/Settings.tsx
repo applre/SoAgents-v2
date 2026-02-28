@@ -2,6 +2,7 @@ import { Check, Download, FolderOpen, KeyRound, Loader2, Plus, RefreshCw, Trash2
 import { ExternalLink } from '@/components/ExternalLink';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
 import { homeDir, join } from '@tauri-apps/api/path';
 
 import { track } from '@/analytics';
@@ -257,6 +258,22 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         }
     }, [initialSection]);
 
+    // Propagate proxy config changes to all running Sidecars
+    const prevProxyRef = useRef<string | undefined>(undefined);
+    useEffect(() => {
+        const key = JSON.stringify(config.proxySettings ?? null);
+        if (prevProxyRef.current === undefined) {
+            prevProxyRef.current = key; // First mount — don't trigger
+            return;
+        }
+        if (prevProxyRef.current === key) return;
+        prevProxyRef.current = key;
+
+        invoke('cmd_propagate_proxy').catch(err =>
+            console.error('[Settings] Proxy propagation failed:', err)
+        );
+    }, [config.proxySettings]);
+
     const [showCustomForm, setShowCustomForm] = useState(false);
     const [customForm, setCustomForm] = useState<CustomProviderForm>(EMPTY_CUSTOM_FORM);
     // Provider edit/manage panel state
@@ -441,6 +458,10 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
         newEnvKey: string;
     } | null>(null);
 
+    const [mcpFormMode, setMcpFormMode] = useState<'form' | 'json'>('form');
+    const [mcpJsonInput, setMcpJsonInput] = useState('');
+    const [mcpJsonError, setMcpJsonError] = useState('');
+
     const [mcpForm, setMcpForm] = useState<{
         id: string;
         name: string;
@@ -570,6 +591,9 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
 
     const resetMcpForm = () => {
         setEditingMcpId(null);
+        setMcpFormMode('form');
+        setMcpJsonInput('');
+        setMcpJsonError('');
         setMcpForm({
             id: '', name: '', type: 'stdio', command: '', args: [], newArg: '', url: '',
             env: {}, newEnvKey: '', headers: {}, newHeaderKey: ''
@@ -681,6 +705,92 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
             toast.success(editingMcpId ? 'MCP 服务器已保存' : 'MCP 服务器已添加');
         } catch {
             toast.error(editingMcpId ? '保存失败' : '添加失败');
+        }
+    };
+
+    // Add MCP servers from JSON (batch import)
+    const handleAddMcpFromJson = async () => {
+        setMcpJsonError('');
+        let parsed: Record<string, unknown>;
+        try {
+            parsed = JSON.parse(mcpJsonInput);
+        } catch {
+            setMcpJsonError('JSON 格式错误，请检查语法');
+            return;
+        }
+
+        // Support { mcpServers: { ... } } or direct { serverName: { ... } }
+        const serversObj = (parsed.mcpServers ?? parsed) as Record<string, unknown>;
+
+        const entries = Object.entries(serversObj).filter(
+            ([, v]) => v && typeof v === 'object' && !Array.isArray(v)
+        );
+        if (entries.length === 0) {
+            setMcpJsonError('未找到有效的 MCP 服务器配置');
+            return;
+        }
+
+        const added: string[] = [];
+        const skipped: string[] = [];
+        const existingIds = new Set(mcpServers.map(s => s.id));
+
+        for (const [name, rawConfig] of entries) {
+            const config = rawConfig as Record<string, unknown>;
+            const id = name.toLowerCase().replace(/\s+/g, '-');
+
+            if (existingIds.has(id)) {
+                skipped.push(id);
+                continue;
+            }
+
+            const hasCommand = typeof config.command === 'string';
+            const hasUrl = typeof config.url === 'string';
+            let type: McpServerType = 'stdio';
+            if (!hasCommand && hasUrl) {
+                type = (config.transportType === 'sse' || config.type === 'sse') ? 'sse' : 'http';
+            }
+
+            const newServer: McpServerDefinition = {
+                id,
+                name,
+                type,
+                isBuiltin: false,
+                ...(type === 'stdio' && {
+                    command: config.command as string,
+                    args: Array.isArray(config.args) ? config.args as string[] : undefined,
+                    env: config.env && typeof config.env === 'object' ? config.env as Record<string, string> : undefined,
+                }),
+                ...((type === 'http' || type === 'sse') && {
+                    url: config.url as string,
+                    headers: config.headers && typeof config.headers === 'object' ? config.headers as Record<string, string> : undefined,
+                }),
+            };
+
+            try {
+                await addCustomMcpServer(newServer);
+                added.push(id);
+                existingIds.add(id);
+            } catch {
+                // Single failure doesn't block the rest
+            }
+        }
+
+        if (added.length > 0) {
+            const servers = await getAllMcpServers();
+            setMcpServersState(servers);
+            track('mcp_add', { type: 'json_import', count: added.length });
+        }
+
+        if (added.length > 0 && skipped.length === 0) {
+            toast.success(`已添加 ${added.length} 个 MCP 服务器`);
+            resetMcpForm();
+            setShowMcpForm(false);
+        } else if (added.length > 0 && skipped.length > 0) {
+            toast.success(`已添加 ${added.length} 个，跳过 ${skipped.length} 个已存在的（${skipped.join(', ')}）`);
+            resetMcpForm();
+            setShowMcpForm(false);
+        } else if (skipped.length > 0) {
+            setMcpJsonError(`所有服务器均已存在：${skipped.join(', ')}`);
         }
     };
 
@@ -2354,16 +2464,44 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                         {/* Header */}
                         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--line)]">
                             <h3 className="text-lg font-semibold text-[var(--ink)]">{editingMcpId ? '编辑 MCP 服务器' : '添加 MCP 服务器'}</h3>
-                            <button
-                                onClick={() => { setShowMcpForm(false); resetMcpForm(); }}
-                                className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-contrast)]"
-                            >
-                                <X className="h-5 w-5" />
-                            </button>
+                            <div className="flex items-center gap-2">
+                                {!editingMcpId && (
+                                    <button
+                                        onClick={() => {
+                                            setMcpFormMode(m => m === 'form' ? 'json' : 'form');
+                                            setMcpJsonError('');
+                                        }}
+                                        className="text-sm text-[var(--accent)] hover:underline"
+                                    >
+                                        {mcpFormMode === 'form' ? '切换为 JSON 配置' : '切换为添加面板'}
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => { setShowMcpForm(false); resetMcpForm(); }}
+                                    className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-contrast)]"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
                         </div>
 
                         {/* Content - Scrollable */}
                         <div className="flex-1 overflow-y-auto overscroll-contain px-6 py-5">
+                          {mcpFormMode === 'json' ? (
+                            <div className="space-y-3">
+                              <textarea
+                                value={mcpJsonInput}
+                                onChange={e => { setMcpJsonInput(e.target.value); setMcpJsonError(''); }}
+                                placeholder={'请粘贴完整的 JSON 配置，例如：\n{\n  "mcpServers": {\n    "ddg-search": {\n      "command": "uvx",\n      "args": ["duckduckgo-mcp-server"]\n    }\n  }\n}'}
+                                className="w-full h-64 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-mono text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)]/50 focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] resize-none"
+                                spellCheck={false}
+                              />
+                              {mcpJsonError && (
+                                <p className="text-sm text-[var(--error)]">{mcpJsonError}</p>
+                              )}
+                            </div>
+                          ) : (
+                          <>
                             {/* Transport Type Selector */}
                             <div className="mb-5">
                                 <label className="mb-2 block text-sm font-medium text-[var(--ink-muted)]">传输协议</label>
@@ -2678,9 +2816,28 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                     </>
                                 )}
                             </div>
+                          </>
+                          )}
                         </div>
 
                         {/* Footer */}
+                        {mcpFormMode === 'json' ? (
+                        <div className="flex gap-3 px-6 py-4 border-t border-[var(--line)]">
+                            <button
+                                onClick={() => { setShowMcpForm(false); resetMcpForm(); }}
+                                className="flex-1 rounded-lg border border-[var(--line)] px-4 py-2.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-contrast)]"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={handleAddMcpFromJson}
+                                disabled={!mcpJsonInput.trim()}
+                                className="flex-1 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
+                            >
+                                导入
+                            </button>
+                        </div>
+                        ) : (
                         <div className={`flex items-center px-6 py-4 border-t border-[var(--line)] ${editingMcpId ? 'justify-between' : 'gap-3'}`}>
                             {editingMcpId && (
                                 <button
@@ -2711,6 +2868,7 @@ export default function Settings({ initialSection, onSectionChange, isActive, up
                                 </button>
                             </div>
                         </div>
+                        )}
                     </div>
                 </div>
             )}

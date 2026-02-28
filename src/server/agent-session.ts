@@ -3,11 +3,13 @@ import { existsSync, mkdirSync, readdirSync, symlinkSync, lstatSync, readFileSyn
 import { join, resolve, sep } from 'path';
 import { createRequire } from 'module';
 import { query, type Query, type SDKUserMessage, type AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
-import { getScriptDir, getBundledBunDir } from './utils/runtime';
+import { getScriptDir, getBundledBunDir, getAgentBrowserCliPath } from './utils/runtime';
 import { getCrossPlatformEnv } from './utils/platform';
+import { getAgentBrowserConfigPath } from './utils/browser-stealth';
 import { resizeImageIfNeeded } from './utils/imageResize';
 import { cronToolsServer, getCronTaskContext, clearCronTaskContext } from './tools/cron-tools';
 import { imCronToolServer, getImCronContext } from './tools/im-cron-tool';
+import { imMediaToolServer, getImMediaContext, clearImMediaContext } from './tools/im-media-tool';
 
 import type { ToolInput } from '../renderer/types/chat';
 import { parsePartialJson } from '../shared/parsePartialJson';
@@ -106,7 +108,8 @@ export function syncProjectUserConfig(projectDir: string): void {
         // Disabled: remove symlink if we created one (never remove real dirs)
         try {
           if (existsSync(linkPath) && lstatSync(linkPath).isSymbolicLink()) {
-            rmSync(linkPath);
+            // recursive: true needed on Windows — junctions are directories, rmSync() alone throws EPERM
+            rmSync(linkPath, { recursive: true });
           }
         } catch { /* ignore */ }
         continue;
@@ -116,7 +119,7 @@ export function syncProjectUserConfig(projectDir: string): void {
       try {
         if (existsSync(linkPath)) {
           if (!lstatSync(linkPath).isSymbolicLink()) continue; // real dir, skip
-          rmSync(linkPath); // stale symlink, recreate
+          rmSync(linkPath, { recursive: true }); // recursive for Windows junctions
         }
       } catch { /* doesn't exist, create it */ }
 
@@ -137,7 +140,7 @@ export function syncProjectUserConfig(projectDir: string): void {
           const target = readlinkSync(linkPath);
           const resolvedTarget = resolve(projectSkillsDir, target);
           if (resolvedTarget.startsWith(userSkillsDir + sep) && !managedSkillNames.has(entry.name)) {
-            rmSync(linkPath);
+            rmSync(linkPath, { recursive: true });
           }
         } catch { /* ignore individual errors */ }
       }
@@ -166,7 +169,7 @@ export function syncProjectUserConfig(projectDir: string): void {
       try {
         if (existsSync(linkPath)) {
           if (!lstatSync(linkPath).isSymbolicLink()) continue; // real file, skip
-          rmSync(linkPath); // stale symlink, recreate
+          rmSync(linkPath, { recursive: true }); // stale symlink, recreate
         }
       } catch { /* doesn't exist, create it */ }
 
@@ -188,7 +191,7 @@ export function syncProjectUserConfig(projectDir: string): void {
           const target = readlinkSync(linkPath);
           const resolvedTarget = resolve(projectCommandsDir, target);
           if (resolvedTarget.startsWith(userCommandsDir + sep) && !managedCommandFiles.has(entry.name)) {
-            rmSync(linkPath);
+            rmSync(linkPath, { recursive: true });
           }
         } catch { /* ignore individual errors */ }
       }
@@ -303,6 +306,7 @@ let currentGroupToolsDeny: string[] = [];
 let shouldResetSessionAfterError = false;
 // Track text block indices for detecting text-type content_block_stop
 const imTextBlockIndices = new Set<number>();
+
 const childToolToParent: Map<string, string> = new Map();
 let messageSequence = 0;
 let sessionId = randomUUID();
@@ -324,6 +328,9 @@ let isPreWarming = false;
 let preWarmTimer: ReturnType<typeof setTimeout> | null = null;
 let preWarmFailCount = 0;
 const PRE_WARM_MAX_RETRIES = 3;
+// Global Sidecar sets this to true via --no-pre-warm CLI flag to skip futile pre-warm attempts
+// (SDK CLI needs first stdin message before system_init, which never comes for Global Sidecar)
+let preWarmDisabled = false;
 let systemInitInfo: SystemInitInfo | null = null;
 type MessageQueueItem = {
   id: string;                     // Unique queue item ID
@@ -577,66 +584,61 @@ let currentMcpServers: McpServerDefinition[] | null = null;
 // null = no agents configured, {} = explicitly set to none
 let currentAgentDefinitions: Record<string, AgentDefinition> | null = null;
 
-// Preset MCP servers (same as renderer/config/types.ts)
-const PRESET_MCP_SERVERS: McpServerDefinition[] = [
-  {
-    id: 'playwright',
-    name: 'Playwright 浏览器',
-    description: '浏览器自动化能力，支持网页浏览、截图、表单填写等',
-    type: 'stdio',
-    command: 'npx',
-    // --user-data-dir is configured by user via config.mcpServerArgs for browser state persistence
-    args: ['@playwright/mcp@latest'],
-    env: {},
-    isBuiltin: true,
-  },
-];
-
 /**
- * Load MCP config from ~/.myagents/config.json
- * This provides a file-based approach that works across all sidecars
+ * Hot-reload proxy configuration into the current process environment.
+ * Mutates process.env so that subsequent SDK subprocess spawns inherit the new proxy.
+ * Triggers session restart (abort + resume + pre-warm) identical to MCP config changes,
+ * but only when the effective proxy URL actually changed.
  */
-function loadMcpServersFromConfig(): McpServerDefinition[] {
-  if (isDebugMode) console.log('[agent] ==> loadMcpServersFromConfig() called');
-  try {
-    const configPath = join(getMyAgentsUserDir(), 'config.json');
-    if (isDebugMode) console.log('[agent] Config path:', configPath);
+export function setProxyConfig(proxySettings: {
+  enabled: boolean;
+  protocol?: string;
+  host?: string;
+  port?: number;
+} | null): void {
+  const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'];
+  const NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
 
-    if (!existsSync(configPath)) {
-      if (isDebugMode) console.log('[agent] No MCP config file found at:', configPath);
-      return [];
+  // Compute the new effective proxy URL for change detection
+  const oldProxyUrl = process.env.HTTP_PROXY || '';
+  const newProxyUrl = proxySettings?.enabled
+    ? `${proxySettings.protocol || 'http'}://${proxySettings.host || '127.0.0.1'}:${proxySettings.port || 7890}`
+    : '';
+  const proxyChanged = oldProxyUrl !== newProxyUrl;
+
+  if (proxySettings?.enabled) {
+    process.env.HTTP_PROXY = newProxyUrl;
+    process.env.HTTPS_PROXY = newProxyUrl;
+    process.env.http_proxy = newProxyUrl;
+    process.env.https_proxy = newProxyUrl;
+    process.env.NO_PROXY = NO_PROXY_VAL;
+    process.env.no_proxy = NO_PROXY_VAL;
+    delete process.env.ALL_PROXY;
+    delete process.env.all_proxy;
+    console.log(`[agent] Proxy hot-reloaded: ${newProxyUrl}`);
+  } else {
+    for (const v of PROXY_VARS) delete process.env[v];
+    console.log('[agent] Proxy cleared (direct connection)');
+  }
+
+  if (!proxyChanged) {
+    if (isDebugMode) console.log('[agent] Proxy config unchanged, skipping session restart');
+    return;
+  }
+
+  // Same pattern as setMcpServers: abort+resume running session, then pre-warm
+  if (querySession) {
+    if (isProcessing && !isPreWarming) {
+      console.log('[agent] Proxy changed, deferring restart (active turn)');
+      pendingConfigRestart = true;
+    } else {
+      if (isDebugMode) console.log('[agent] Proxy changed, restarting session with resume');
+      abortPersistentSession();
     }
-
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- Dynamic fs import for config loading
-    const content = require('fs').readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(content);
-
-    // Get globally enabled server IDs
-    const globalEnabledIds: string[] = config.mcpEnabledServers ?? [];
-    if (globalEnabledIds.length === 0) {
-      if (isDebugMode) console.log('[agent] No MCP servers enabled globally');
-      return [];
-    }
-
-    // Get custom servers from config + preset servers
-    const customServers: McpServerDefinition[] = config.mcpServers ?? [];
-    const allServers = [...PRESET_MCP_SERVERS, ...customServers];
-
-    // Filter to only globally enabled servers
-    const enabledServers = allServers.filter(s => globalEnabledIds.includes(s.id));
-
-    // Apply server-specific args and env overrides
-    const serverArgsConfig: Record<string, string[]> = config.mcpServerArgs ?? {};
-    const serverEnvConfig: Record<string, Record<string, string>> = config.mcpServerEnv ?? {};
-
-    return enabledServers.map(server => ({
-      ...server,
-      args: [...(server.args ?? []), ...(serverArgsConfig[server.id] ?? [])],
-      env: { ...server.env, ...(serverEnvConfig[server.id] ?? {}) }
-    }));
-  } catch (error) {
-    console.error('[agent] Failed to load MCP config from file:', error);
-    return [];
+  }
+  preWarmFailCount = 0;
+  if (!isProcessing || isPreWarming) {
+    schedulePreWarm();
   }
 }
 
@@ -777,6 +779,7 @@ export function setSessionModel(model: string): void {
 function schedulePreWarm(): void {
   if (preWarmTimer) clearTimeout(preWarmTimer);
   if (!agentDir) return;
+  if (preWarmDisabled) return;
 
   // Stop retrying after consecutive failures to avoid infinite loop
   if (preWarmFailCount >= PRE_WARM_MAX_RETRIES) {
@@ -927,16 +930,13 @@ function pinMcpPackageVersions(args: string[]): string[] {
  * - Custom MCP can use any user-preferred tools
  */
 function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronToolsServer> {
-  // Use memory cache if set (even if empty - user explicitly disabled all MCP)
-  // Only fall back to config file if never set (null)
-  let servers: McpServerDefinition[];
-  if (currentMcpServers === null) {
-    servers = loadMcpServersFromConfig();
-    console.log(`[agent] Loaded MCP from config file: ${servers.map(s => s.id).join(', ') || 'none'}`);
-  } else {
-    servers = currentMcpServers;
-    if (isDebugMode) console.log(`[agent] Using workspace MCP: ${servers.map(s => s.id).join(', ') || 'none'}`);
-  }
+  // null = MCP not yet configured (e.g. Global sidecar, or Tab pre-warm before /api/mcp/set)
+  // [] = explicitly no MCP (user has none enabled)
+  // [...]= user's enabled MCP servers
+  // Never fall back to config file — the frontend's /api/mcp/set is the single source of truth.
+  // Global sidecar never receives /api/mcp/set and correctly gets no MCP.
+  const servers: McpServerDefinition[] = currentMcpServers ?? [];
+  if (isDebugMode) console.log(`[agent] MCP servers: ${servers.map(s => s.id).join(', ') || 'none'}`);
 
   const result: Record<string, SdkMcpServerConfig | typeof cronToolsServer> = {};
 
@@ -952,6 +952,13 @@ function buildSdkMcpServers(): Record<string, SdkMcpServerConfig | typeof cronTo
   if (imCronCtx && process.env.MYAGENTS_MANAGEMENT_PORT) {
     result['im-cron'] = imCronToolServer;
     console.log(`[agent] Added im-cron MCP server for bot ${imCronCtx.botId}`);
+  }
+
+  // Add IM media tool if we're in an IM context with management API available
+  const imMediaCtx = getImMediaContext();
+  if (imMediaCtx && process.env.MYAGENTS_MANAGEMENT_PORT) {
+    result['im-media'] = imMediaToolServer;
+    console.log(`[agent] Added im-media MCP server for bot ${imMediaCtx.botId}`);
   }
 
   // Return early if no user MCP servers (but may have cron-tools)
@@ -1750,6 +1757,14 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     essentialPaths.push(bundledBunDir);
   }
 
+  // MyAgents bin directory (agent-browser wrapper etc.)
+  if (home) {
+    const myagentsBinDir = isWindows
+      ? resolve(home, '.myagents', 'bin')
+      : `${home}/.myagents/bin`;
+    essentialPaths.push(myagentsBinDir);
+  }
+
   // System bun/runtime installations (fallback)
   if (isWindows) {
     // Windows paths
@@ -1807,6 +1822,22 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     // into project .claude/skills/ by syncProjectUserConfig() instead.
   };
 
+  // agent-browser: point to MyAgents-managed stealth config (headed + anti-detection)
+  const abConfigPath = getAgentBrowserConfigPath();
+  if (abConfigPath && !env.AGENT_BROWSER_CONFIG) {
+    env.AGENT_BROWSER_CONFIG = abConfigPath;
+  }
+
+  // agent-browser: bypass Rust canonicalize() UNC path issue on Windows
+  // https://github.com/vercel-labs/agent-browser/issues/393
+  if (isWindows) {
+    const abCliPath = getAgentBrowserCliPath();
+    if (abCliPath) {
+      // cliPath = .../agent-browser/bin/agent-browser.js → HOME = .../agent-browser/
+      env.AGENT_BROWSER_HOME = resolve(abCliPath, '..', '..');
+    }
+  }
+
   // Use provided providerEnv or fall back to currentProviderEnv
   const effectiveProviderEnv = providerEnv ?? currentProviderEnv;
 
@@ -1860,10 +1891,14 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
 
     switch (authType) {
       case 'auth_token':
-        // Only set AUTH_TOKEN, delete API_KEY
+        // Set AUTH_TOKEN for Authorization: Bearer header.
+        // MUST also set API_KEY to the SAME value to block the SDK CLI's internal
+        // key resolution chain (KH function) from falling back to keychain/config.
+        // Without this, if the user ever saved an unrelated key via `claude auth set-key`,
+        // the CLI would find that stale key and send it as x-api-key, causing 403.
         env.ANTHROPIC_AUTH_TOKEN = effectiveProviderEnv.apiKey;
-        delete env.ANTHROPIC_API_KEY;
-        console.log('[env] ANTHROPIC_AUTH_TOKEN set (authType: auth_token)');
+        env.ANTHROPIC_API_KEY = effectiveProviderEnv.apiKey;
+        console.log('[env] ANTHROPIC_AUTH_TOKEN + ANTHROPIC_API_KEY set (authType: auth_token)');
         break;
       case 'api_key':
         // Only set API_KEY, delete AUTH_TOKEN
@@ -1872,7 +1907,11 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
         console.log('[env] ANTHROPIC_API_KEY set (authType: api_key)');
         break;
       case 'auth_token_clear_api_key':
-        // Set AUTH_TOKEN and explicitly set API_KEY to empty string (required by OpenRouter)
+        // OpenRouter requires AUTH_TOKEN and API_KEY set to empty string.
+        // The empty API_KEY tells the Anthropic SDK not to send x-api-key header,
+        // while AUTH_TOKEN provides the actual credential via Authorization: Bearer.
+        // NOTE: empty string is falsy so the CLI's KH() will still fall back to keychain.
+        // This is acceptable for OpenRouter since it only checks the Bearer header.
         env.ANTHROPIC_AUTH_TOKEN = effectiveProviderEnv.apiKey;
         env.ANTHROPIC_API_KEY = '';
         console.log('[env] ANTHROPIC_AUTH_TOKEN set, ANTHROPIC_API_KEY cleared (authType: auth_token_clear_api_key)');
@@ -2310,7 +2349,9 @@ function handleMessageComplete(): void {
   toolResultIndexToId.clear();
   childToolToParent.clear();
   imTextBlockIndices.clear();
+
   clearCronTaskContext();
+  clearImMediaContext();
 
   // Only transition to idle if no queued messages waiting.
   if (messageQueue.length === 0) {
@@ -2343,6 +2384,7 @@ function handleMessageStopped(): void {
   toolResultIndexToId.clear();
   childToolToParent.clear();
   imTextBlockIndices.clear();
+
 
   // Only transition to idle if no queued messages waiting (same logic as handleMessageComplete)
   if (messageQueue.length === 0) {
@@ -2721,6 +2763,7 @@ function clearMessageState(): void {
   toolResultIndexToId.clear();
   childToolToParent.clear();
   imTextBlockIndices.clear();
+
   strippedToolResultIds.clear();
   isStreamingMessage = false;
   messageSequence = 0;
@@ -2867,7 +2910,12 @@ export async function initializeAgent(
   nextAgentDir: string,
   initialPrompt?: string | null,
   initialSessionId?: string,
+  options?: { preWarmDisabled?: boolean },
 ): Promise<void> {
+  if (options?.preWarmDisabled) {
+    preWarmDisabled = true;
+    console.log('[agent] pre-warm disabled via --no-pre-warm (Global Sidecar)');
+  }
   agentDir = nextAgentDir;
   hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());
   systemInitInfo = null;
@@ -3173,6 +3221,7 @@ export async function enqueueUserMessage(
     streamIndexToToolId.clear();
     toolResultIndexToId.clear();
     imTextBlockIndices.clear();
+  
     if (isDebugMode) console.log(`[agent] session terminated for provider switch`);
   } else if (providerEnv) {
     // Provider not changed (or first message with API provider), just update tracking
@@ -3603,6 +3652,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   let detectedAlreadyInUse = false; // stderr reported "Session ID already in use"
   streamIndexToToolId.clear();
   imTextBlockIndices.clear();
+
   // Don't broadcast 'running' during pre-warm — session is invisible to frontend
   if (!preWarm) {
     setSessionState('running');
@@ -3830,34 +3880,38 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     console.log('[agent] session started');
     console.log('[agent] starting for-await loop on querySession');
 
-    // Startup timeout: if no SDK message arrives within 60s, abort
+    // Startup timeout: if no system_init arrives within 60s, abort.
+    // IMPORTANT: Only system_init clears this timeout, NOT other messages like rate_limit_event.
+    // Otherwise a rate_limit_event arriving before system_init would cancel the timeout,
+    // leaving the session as a zombie (stuck in for-await loop forever without system_init).
     const STARTUP_TIMEOUT_MS = 60_000;
-    let firstMessageReceived = false;
+    let systemInitReceived = false;
 
-    startupTimeoutId = setTimeout(() => {
-        if (!firstMessageReceived && !shouldAbortSession) {
-            console.error(`[agent] Startup timeout: no SDK message in ${STARTUP_TIMEOUT_MS / 1000}s`);
-            abortedByTimeout = true;
-            if (!isPreWarming) {
-                broadcast('chat:agent-error', {
-                    message: 'Agent 启动超时，请重试。如果持续出现，请检查网络连接和 API 配置。'
-                });
-                broadcast('chat:message-error', 'Agent 启动超时');
-            }
-            // abortPersistentSession 统一处理：设置 shouldAbortSession、唤醒 generator
-            // 的 waitForMessage/waitForTurnComplete、调用 interrupt() 解除 for-await 阻塞
-            abortPersistentSession();
-        }
-    }, STARTUP_TIMEOUT_MS);
+    // Pre-warm sessions skip startup timeout because SDK CLI needs the first stdin message
+    // before sending system_init. During pre-warm, messageGenerator() blocks at waitForMessage()
+    // with no message to yield — system_init will only arrive when user sends a message
+    // (triggering pre-warm → active transition). If the subprocess crashes during pre-warm,
+    // the for-await loop exits naturally and the finally block handles retry.
+    if (!preWarm) {
+      startupTimeoutId = setTimeout(() => {
+          if (!systemInitReceived && !shouldAbortSession) {
+              console.error(`[agent] Startup timeout: no system_init in ${STARTUP_TIMEOUT_MS / 1000}s`);
+              abortedByTimeout = true;
+              broadcast('chat:agent-error', {
+                  message: 'Agent 启动超时，请重试。如果持续出现，请检查网络连接和 API 配置。'
+              });
+              broadcast('chat:message-error', 'Agent 启动超时');
+              // abortPersistentSession 统一处理：设置 shouldAbortSession、唤醒 generator
+              // 的 waitForMessage/waitForTurnComplete、调用 interrupt() 解除 for-await 阻塞
+              abortPersistentSession();
+          }
+      }, STARTUP_TIMEOUT_MS);
+    }
 
     let messageCount = 0;
 
     for await (const sdkMessage of querySession) {
       messageCount++;
-      if (!firstMessageReceived) {
-          firstMessageReceived = true;
-          clearTimeout(startupTimeoutId);
-      }
       console.log(`[agent][sdk] message #${messageCount} type=${sdkMessage.type}`);
       try {
         const line = `${new Date().toISOString()} ${JSON.stringify(sdkMessage)}`;
@@ -3868,6 +3922,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
       const nextSystemInit = parseSystemInitInfo(sdkMessage);
       if (nextSystemInit) {
+        // system_init received — clear startup timeout
+        if (!systemInitReceived) {
+          systemInitReceived = true;
+          clearTimeout(startupTimeoutId);
+        }
         systemInitInfo = nextSystemInit;
         // Buffer system_init during pre-warm; replay when first user message arrives
         if (!isPreWarming) {
@@ -4395,6 +4454,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           if (rawError.includes('unknown variant') && rawError.includes('image')) {
             shouldResetSessionAfterError = true;
           }
+          // Detect stale session — SDK started (system_init received) but conversation
+          // data is broken (e.g., IM Bot restart: old session_id restored from disk,
+          // SDK directory exists but conversation context is unusable).
+          // Without this, the persistent session loops: every message gets the same error
+          // because sessionRegistered stays true and SDK keeps trying --resume.
+          // The catch-block recovery (below) only covers Scenario A (SDK throws on startup);
+          // this covers Scenario B (SDK starts, returns is_error in result message).
+          if (rawError.includes('No conversation found')) {
+            shouldResetSessionAfterError = true;
+          }
           if (imStreamCallback) {
             const errorText = localizeImError(rawError);
             console.warn('[agent] SDK result is_error, forwarding to IM:', errorText);
@@ -4406,17 +4475,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // Surface SDK-level errors that produced no assistant output (e.g. "Unknown skill: xxx").
         // These results have non-empty result text but no visible assistant text was streamed.
         // Without this, the user sees nothing — the message just silently completes.
-        // Note: Cannot rely on modelUsage — it accumulates across persistent session turns.
+        // Always use chat:agent-error (banner) instead of chat:message-chunk, because
+        // message-chunk + message-complete fire in the same tick and React batching
+        // can swallow the streaming message before it renders.
         const resultText = resultMessage.result || '';
         if (resultText && !currentTurnHasOutput && !currentTurnToolCount) {
           console.warn('[agent] SDK returned result with no API output, surfacing to user:', resultText);
-          if (resultMessage.is_error) {
-            // True SDK error: show as dismissible error banner (not regular assistant text)
-            broadcast('chat:agent-error', { message: resultText });
-          } else {
-            // SDK result without output (e.g. "Unknown skill"): show as message text
-            broadcast('chat:message-chunk', resultText);
-          }
+          broadcast('chat:agent-error', { message: resultText });
           // Also forward to IM callback (prevents "(No Response)" for non-is_error SDK failures)
           if (imStreamCallback) {
             imStreamCallback('complete', resultText);
@@ -4500,10 +4565,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         handleMessageComplete();
         signalTurnComplete();  // 解锁 generator 进入下一轮
 
-        // Auto-reset session if image content polluted conversation history
+        // Auto-reset session after unrecoverable errors (image content in history,
+        // stale "No conversation found", etc.) — generates new session ID so next
+        // message starts fresh without trying --resume on broken conversation data
         if (shouldResetSessionAfterError) {
           shouldResetSessionAfterError = false;
-          console.warn('[agent] Auto-resetting session due to image content error in history');
+          console.warn('[agent] Auto-resetting session due to unrecoverable conversation error');
           resetSession().catch(e => console.error('[agent] Auto-reset failed:', e));
         }
 
@@ -4606,6 +4673,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     clearCronTaskContext();
+    clearImMediaContext();
     resolveTermination!();
 
     if (wasPreWarming) {

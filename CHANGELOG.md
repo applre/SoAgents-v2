@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.30] - 2026-02-28
+
+### Added
+- **agent-browser 内置浏览器自动化**：集成 agent-browser CLI 作为内置技能，支持网页截图、表单填写、数据提取
+  - Chromium 自动安装（文件锁防并发）
+  - 开发模式自动安装 + 首次使用提示
+  - 项目技能右键「同步至全局技能」
+- **IM Bot 多媒体发送**：SDK 自定义工具 send_media，支持发送图片/文档到 IM
+- **代理配置热更新**：Settings 修改代理后实时传播到所有运行中 Sidecar
+- **MCP 添加面板 JSON 批量导入**：支持一次性导入多个 MCP 服务器 + DDG-Search 预设
+- **工作区右键「用默认应用打开」**：文件可用系统默认程序打开
+- **检测并清除 settings.json 环境变量覆盖**：防止 CLAUDE_CONFIG_DIR 等覆盖影响认证
+- **agent-browser 反检测默认配置 + Profile 持久化**：自动生成 headed 模式、真实 UA、持久化 Profile 的反检测配置，解决知乎/微博等网站被拦截问题
+
+### Fixed
+- **Windows Sidecar 启动失败**：UNC 路径前缀导致 Bun 无法识别资源路径
+- **Windows agent-browser 浏览器自动化不可用**：daemon 启动失败（无 Node.js）+ 命令找不到（Git Bash 不识别 .cmd）
+- **Windows 技能同步失败**：symlink junction 删除需要 recursive 选项
+- **Windows 启动诊断增强**：崩溃日志跨平台 + 启动 beacon + 健康检查可见化
+- **agent-browser 构建产物缺失**：运行时报 "No binary found"
+- **agent-browser 构建脚本预装卡死**：改用预生成 lockfile 秒级安装
+- **macOS 公证失败**：agent-browser 原生二进制未签名
+- **Global Sidecar pre-warm 异常**：无效 pre-warm 启动 + Tab pre-warm 超时误杀 + 僵尸进程
+- **Global Sidecar 意外加载 MCP**：Settings/Launcher 不应加载用户 MCP 配置
+- **IM Bot 重启后 "No conversation found" 死循环**
+- **新会话首条消息 loading 状态闪断**
+- **Windows 文件重命名导致文件被移到 AppData 目录**
+- **供应商选择菜单溢出屏幕**
+- **工作区大目录无法展开**（条目上限 50000）
+- **macOS 全屏退出后 Tab 遮挡红绿灯**
+- **Provider 验证 auth 错误未正确检测**：SDK 返回 403/401 时误报验证成功
+
+### Changed
+- **路径 normalize Pit of Success 重构**：源头统一处理，消除消费端重复 strip
+- **Bun 输出接入统一日志**：Sidecar stdout/stderr 可在日志面板查看
+- **消除 Rust 编译 warning**：平台分离 graceful shutdown 逻辑
+- **Code Review 修复**：构建版本校验 + 签名失败硬中断 + 死代码清理
+
+---
+
 ## [0.1.29] - 2026-02-27
 
 ### Added

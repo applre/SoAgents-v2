@@ -1,7 +1,7 @@
-import { appendFileSync, copyFileSync, cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
+import { appendFileSync, copyFileSync, cpSync, existsSync, linkSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, mkdirSync, rmSync, renameSync } from 'fs';
 import { mkdir, rename, rm, stat } from 'fs/promises';
-import { basename, dirname, join, relative, resolve, extname } from 'path';
-import { tmpdir } from 'os';
+import { basename, dirname, join, relative, resolve, extname, sep } from 'path';
+import { tmpdir, homedir } from 'os';
 import AdmZip from 'adm-zip';
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -28,10 +28,11 @@ import {
   CRON_TASK_EXIT_REASON_PATTERN,
 } from './tools/cron-tools';
 import { setImCronContext } from './tools/im-cron-tool';
+import { setImMediaContext } from './tools/im-media-tool';
 
 // ============= CRASH DIAGNOSTICS =============
 // File-based logging to capture crashes before process dies
-const CRASH_LOG = '/tmp/myagents-crash.log';
+const CRASH_LOG = join(tmpdir(), 'myagents-crash.log');
 
 function crashLog(prefix: string, ...args: unknown[]) {
   try {
@@ -43,6 +44,9 @@ function crashLog(prefix: string, ...args: unknown[]) {
     appendFileSync(CRASH_LOG, `[${new Date().toISOString()}] ${prefix} ${msg}\n`);
   } catch { /* ignore */ }
 }
+
+// Top-level beacon: fires BEFORE main(), proves JS module loading succeeded
+try { process.stderr.write(`[startup] module loaded, pid=${process.pid}\n`); } catch { /* ignore */ }
 
 process.on('exit', (code) => {
   crashLog('EXIT', `code=${code}`);
@@ -107,10 +111,12 @@ import {
   setSidecarPort,
   getOpenAiBridgeConfig,
   syncProjectUserConfig,
+  setProxyConfig,
   type ProviderEnv,
 } from './agent-session';
 import { getHomeDirOrNull } from './utils/platform';
-import { getScriptDir } from './utils/runtime';
+import { getScriptDir, getAgentBrowserCliPath, getBundledRuntimePath, getPackageManagerPath } from './utils/runtime';
+import { ensureBrowserStealthConfig } from './utils/browser-stealth';
 import { buildDirectoryTree, expandDirectory } from './dir-info';
 import {
   createSession,
@@ -235,7 +241,7 @@ function buildCronSystemPromptAppend(
   return content;
 }
 
-function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string } {
+function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string; noPreWarm?: boolean } {
   const args = argv.slice(2);
   const getArgValue = (flag: string) => {
     const index = args.indexOf(flag);
@@ -249,12 +255,13 @@ function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; 
   const initialPrompt = getArgValue('--prompt') ?? undefined;
   const port = Number(getArgValue('--port') ?? 3000);
   const sessionId = getArgValue('--session-id') ?? undefined;
+  const noPreWarm = args.includes('--no-pre-warm');
 
   if (!agentDir) {
     throw new Error('Missing required argument: --agent-dir <path>');
   }
 
-  return { agentDir, initialPrompt, port: Number.isNaN(port) ? 3000 : port, sessionId };
+  return { agentDir, initialPrompt, port: Number.isNaN(port) ? 3000 : port, sessionId, noPreWarm };
 }
 
 /**
@@ -371,10 +378,11 @@ function seedBundledSkills(): void {
 
     let changed = false;
     for (const folder of bundledFolders) {
-      if (config.seeded.includes(folder)) continue;
+      const dst = join(userSkillsDir, folder);
+      // Re-seed if marked as seeded but directory was deleted
+      if (config.seeded.includes(folder) && existsSync(dst)) continue;
 
       const src = join(bundledDir, folder);
-      const dst = join(userSkillsDir, folder);
       // Skip if destination already exists (don't overwrite user's custom content)
       if (existsSync(dst)) {
         config.seeded.push(folder);
@@ -399,6 +407,224 @@ function seedBundledSkills(): void {
     }
   } catch (err) {
     console.error('[seed] Error seeding bundled skills:', err);
+  }
+}
+
+/**
+ * Generate wrapper script for agent-browser CLI in ~/.myagents/bin/.
+ * This makes `agent-browser` available as a bare command in SDK subprocess PATH.
+ * The wrapper delegates to `{bun} {agent-browser.js}`.
+ */
+const AGENT_BROWSER_VERSION = '0.15.1';
+
+/**
+ * Write the agent-browser wrapper script to ~/.myagents/bin/.
+ * Returns true on success.
+ */
+function writeAgentBrowserWrapper(cliPath: string): boolean {
+  const bunPath = getBundledRuntimePath();
+  const homeDir = getHomeDirOrNull();
+  if (!homeDir) {
+    console.warn('[agent-browser] Home directory not found, skipping wrapper setup');
+    return false;
+  }
+  const binDir = join(homeDir, '.myagents', 'bin');
+  if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
+
+  // POSIX sh: escape backslash, double-quote, dollar, backtick inside double-quoted strings
+  const shellEscape = (s: string) => s.replace(/([\\"`$])/g, '\\$1');
+  const isWin = process.platform === 'win32';
+  if (isWin) {
+    // Windows needs TWO wrappers (like npm global installs):
+    // 1. .cmd for cmd.exe / PowerShell
+    // 2. extensionless POSIX sh for Git Bash (SDK uses Git Bash on Windows)
+    const safeBun = bunPath.replace(/"/g, '""');
+    const safeCli = cliPath.replace(/"/g, '""');
+    writeFileSync(join(binDir, 'agent-browser.cmd'), `@"${safeBun}" "${safeCli}" %*\r\n`);
+    writeFileSync(join(binDir, 'agent-browser'), `#!/bin/sh\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`);
+  } else {
+    writeFileSync(join(binDir, 'agent-browser'), `#!/bin/sh\nexec "${shellEscape(bunPath)}" "${shellEscape(cliPath)}" "$@"\n`, { mode: 0o755 });
+  }
+  console.log(`[agent-browser] Wrapper created: ${join(binDir, 'agent-browser')}${isWin ? ' (.cmd + sh)' : ''}`);
+
+  // agent-browser's Rust binary spawns daemon.js via hardcoded `node` command.
+  // Since we bundle bun (not Node.js), create a node shim that delegates to bun.
+  // Always overwrite (no existsSync guard) — bunPath may change after app update,
+  // matching the agent-browser wrapper's unconditional-write behavior above.
+  const nodeShimPath = join(binDir, 'node');
+  if (isWin) {
+    // Windows: create node.exe as a hardlink to bun.exe.
+    // Windows PATH resolves .exe before .cmd (PATHEXT order). Using .exe avoids
+    // cmd.exe being invoked for node.cmd, which would create a visible console window.
+    const nodeExePath = join(binDir, 'node.exe');
+    try {
+      if (existsSync(nodeExePath)) unlinkSync(nodeExePath);
+      linkSync(bunPath, nodeExePath);
+    } catch {
+      // Hardlink failed (cross-volume?) — fall back to copy
+      try { copyFileSync(bunPath, nodeExePath); } catch { /* .cmd fallback below */ }
+    }
+    // .cmd fallback for cmd.exe / PowerShell manual invocation
+    const escapedBun = bunPath.replace(/"/g, '""');
+    writeFileSync(join(binDir, 'node.cmd'), `@"${escapedBun}" %*\r\n`);
+    // POSIX sh fallback for Git Bash
+    writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${shellEscape(bunPath)}" "$@"\n`);
+  } else {
+    writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${shellEscape(bunPath)}" "$@"\n`, { mode: 0o755 });
+  }
+
+  return true;
+}
+
+/**
+ * Ensure Chromium is installed via agent-browser's own playwright-core.
+ * This avoids version mismatch (agent-browser pins a specific Chromium build).
+ * See: https://github.com/vercel-labs/agent-browser/issues/107
+ *
+ * Runs in the background — does not block caller.
+ * @param cliPath Path to agent-browser.js (used to locate node_modules/playwright-core)
+ */
+/**
+ * Check whether Chromium needs installing, using a file-system lock so only one
+ * Sidecar process across the whole app performs the download.
+ */
+function ensureChromiumInstalled(cliPath: string): void {
+  // cliPath: .../agent-browser-cli/node_modules/agent-browser/bin/agent-browser.js
+  // We need:  .../agent-browser-cli/node_modules/playwright-core/cli.js
+  const nodeModulesDir = resolve(cliPath, '..', '..', '..');
+  const playwrightCli = join(nodeModulesDir, 'playwright-core', 'cli.js');
+  if (!existsSync(playwrightCli)) return;
+
+  // File-system lock: only one process installs; others skip.
+  const homeDir = getHomeDirOrNull();
+  if (!homeDir) return;
+  const lockFile = join(homeDir, '.myagents', '.chromium-installing');
+  if (existsSync(lockFile)) {
+    try {
+      const lockTime = statSync(lockFile).mtimeMs;
+      if (Date.now() - lockTime < 10 * 60 * 1000) return; // another process is working (<10 min)
+      rmSync(lockFile, { force: true }); // stale lock
+    } catch { return; }
+  }
+  try {
+    writeFileSync(lockFile, String(process.pid), { flag: 'wx' }); // exclusive create
+  } catch { return; } // another process won the race
+
+  console.log('[agent-browser] Ensuring Chromium is installed via bundled playwright-core...');
+  const bunPath = getBundledRuntimePath();
+  const chromiumProc = Bun.spawn([bunPath, playwrightCli, 'install', 'chromium'], {
+    cwd: nodeModulesDir,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  });
+  chromiumProc.exited.then(async (code) => {
+    rmSync(lockFile, { force: true });
+    if (code === 0) {
+      console.log('[agent-browser] Chromium ready');
+    } else {
+      const stderr = await new Response(chromiumProc.stderr).text();
+      console.warn(`[agent-browser] Chromium install failed (exit ${code}):`, stderr.slice(0, 500));
+    }
+  }).catch((err) => {
+    rmSync(lockFile, { force: true });
+    console.error('[agent-browser] Chromium install error:', err);
+  });
+}
+
+/**
+ * Auto-install agent-browser to ~/.myagents/agent-browser-cli/ using bundled bun or system npm.
+ * Runs in the background so it doesn't block Sidecar startup.
+ */
+function autoInstallAgentBrowser(): void {
+  const homeDir = getHomeDirOrNull();
+  if (!homeDir) return;
+
+  const installDir = join(homeDir, '.myagents', 'agent-browser-cli');
+  const lockFile = join(installDir, '.installing');
+
+  if (!existsSync(installDir)) mkdirSync(installDir, { recursive: true });
+
+  // Atomic lock: stale check + exclusive create (same pattern as ensureChromiumInstalled)
+  if (existsSync(lockFile)) {
+    try {
+      const lockTime = statSync(lockFile).mtimeMs;
+      if (Date.now() - lockTime < 5 * 60 * 1000) {
+        console.log('[agent-browser] Install already in progress, skipping');
+        return;
+      }
+      rmSync(lockFile, { force: true }); // stale lock
+    } catch { /* ignore */ }
+  }
+  try {
+    writeFileSync(lockFile, String(process.pid), { flag: 'wx' }); // exclusive create
+  } catch {
+    console.log('[agent-browser] Install already in progress, skipping');
+    return;
+  }
+
+  // Ensure package.json exists (bun add requires it)
+  const pkgJsonPath = join(installDir, 'package.json');
+  if (!existsSync(pkgJsonPath)) {
+    writeFileSync(pkgJsonPath, '{}');
+  }
+
+  const pm = getPackageManagerPath();
+  const pkg = `agent-browser@${AGENT_BROWSER_VERSION}`;
+  // bun add <pkg> / npm install <pkg> — both work with cwd
+  const finalArgs = pm.installArgs(pkg);
+
+  console.log(`[agent-browser] Auto-installing ${pkg} to ${installDir} using ${pm.type}...`);
+
+  const proc = Bun.spawn([pm.command, ...finalArgs], {
+    cwd: installDir,
+    stdout: 'ignore',
+    stderr: 'pipe',
+  });
+
+  // Handle in background — don't block startup
+  proc.exited.then(async (code) => {
+    if (code !== 0) {
+      rmSync(lockFile, { force: true });
+      new Response(proc.stderr).text().then((stderr) => {
+        console.error(`[agent-browser] Auto-install failed (exit ${code}):`, stderr.slice(0, 500));
+      }).catch(() => {
+        console.error(`[agent-browser] Auto-install failed (exit ${code})`);
+      });
+      return;
+    }
+
+    console.log('[agent-browser] npm install completed');
+    const cliPath = getAgentBrowserCliPath();
+    if (!cliPath) {
+      rmSync(lockFile, { force: true });
+      console.warn('[agent-browser] CLI still not found after install');
+      return;
+    }
+    writeAgentBrowserWrapper(cliPath);
+    ensureChromiumInstalled(cliPath);
+    ensureBrowserStealthConfig();
+    rmSync(lockFile, { force: true });
+  }).catch((err) => {
+    rmSync(lockFile, { force: true });
+    console.error('[agent-browser] Auto-install error:', err);
+  });
+}
+
+function setupAgentBrowserWrapper(): void {
+  try {
+    const cliPath = getAgentBrowserCliPath();
+    if (cliPath) {
+      writeAgentBrowserWrapper(cliPath);
+      ensureChromiumInstalled(cliPath);  // Background — won't block startup
+      ensureBrowserStealthConfig();
+      return;
+    }
+
+    // CLI not bundled — auto-install to ~/.myagents/agent-browser-cli/
+    console.log('[agent-browser] CLI not found in bundle, starting auto-install...');
+    autoInstallAgentBrowser();
+  } catch (err) {
+    console.error('[agent-browser] Error setting up wrapper:', err);
   }
 }
 
@@ -437,7 +663,7 @@ function isValidAgentDir(dir: string): { valid: boolean; reason?: string } {
   ];
 
   for (const forbidden of forbiddenPaths) {
-    if (resolved === forbidden || resolved.startsWith(forbidden + '/')) {
+    if (resolved === forbidden || resolved.startsWith(forbidden + sep)) {
       return { valid: false, reason: `Access to ${forbidden} is not allowed` };
     }
   }
@@ -452,7 +678,7 @@ function isValidAgentDir(dir: string): { valid: boolean; reason?: string } {
   ];
 
   const isUnderAllowed = allowedParents.some(
-    parent => parent && resolved.startsWith(parent)
+    parent => parent && (resolved === parent || resolved.startsWith(parent + sep))
   );
 
   if (!isUnderAllowed) {
@@ -463,9 +689,11 @@ function isValidAgentDir(dir: string): { valid: boolean; reason?: string } {
 }
 
 function resolveAgentPath(root: string, relativePath: string): string | null {
-  const normalized = relativePath.replace(/^\/+/, '');
+  // Strip leading slashes (both / and \ for Windows compatibility)
+  const normalized = relativePath.replace(/^[/\\]+/, '');
   const resolved = resolve(root, normalized);
-  if (!resolved.startsWith(root)) {
+  // Use root + sep to prevent prefix collision (e.g. /agent matching /agent-other)
+  if (resolved !== root && !resolved.startsWith(root + sep)) {
     return null;
   }
   return resolved;
@@ -676,12 +904,40 @@ function buildCronEventPrompt(
   return prompt;
 }
 
+/**
+ * Write a startup beacon directly to unified log file (bypasses initLogger).
+ * This is critical for diagnosing Windows startup hangs where initLogger
+ * may not be reached yet and zero BUN logs appear.
+ */
+function startupBeacon(step: string): void {
+  // Write to stderr — captured by Rust drain thread → unified log
+  try { process.stderr.write(`[startup] ${step}\n`); } catch { /* ignore */ }
+  // Also write directly to unified log file
+  try {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const logsDir = join(homedir(), '.myagents', 'logs');
+    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+    const filePath = join(logsDir, `unified-${y}-${m}-${d}.log`);
+    const ts = now.toISOString();
+    appendFileSync(filePath, `${ts} [BUN  ] [INFO ] [startup] ${step}\n`);
+  } catch { /* ignore */ }
+}
+
 async function main() {
-  const { agentDir, initialPrompt, port, sessionId: initialSessionId } = parseArgs(process.argv);
+  startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
+
+  const { agentDir, initialPrompt, port, sessionId: initialSessionId, noPreWarm } = parseArgs(process.argv);
+  startupBeacon(`args parsed, port=${port}, agentDir=${agentDir.slice(-40)}`);
+
   let currentAgentDir = await ensureAgentDir(agentDir);
+  startupBeacon('ensureAgentDir done');
 
   // Initialize unified logging system (intercepts console.log and sends to SSE)
   initLogger(getClients);
+  startupBeacon('initLogger done — switching to console.log');
 
   // Clean up old logs (30+ days)
   cleanupOldLogs();        // Agent session logs
@@ -689,8 +945,14 @@ async function main() {
 
   // Seed bundled skills to ~/.myagents/skills/ on first launch
   seedBundledSkills();
+  console.log('[startup] seedBundledSkills done');
 
-  await initializeAgent(currentAgentDir, initialPrompt, initialSessionId);
+  // Generate agent-browser CLI wrapper in ~/.myagents/bin/
+  setupAgentBrowserWrapper();
+  console.log('[startup] setupAgentBrowserWrapper done');
+
+  await initializeAgent(currentAgentDir, initialPrompt, initialSessionId, { preWarmDisabled: noPreWarm });
+  console.log('[startup] initializeAgent done');
 
   // Store sidecar port for OpenAI bridge loopback
   setSidecarPort(port);
@@ -705,6 +967,8 @@ async function main() {
     maxOutputTokens: 8192,
     logger: (msg) => console.log(msg),
   });
+
+  console.log(`[startup] Bun.serve() binding to 127.0.0.1:${port}...`);
 
   Bun.serve({
     port,
@@ -738,6 +1002,57 @@ async function main() {
       if (pathname === '/api/session-state' && request.method === 'GET') {
         const { sessionState } = getAgentState();
         return jsonResponse({ sessionState });
+      }
+
+      // Check ~/.claude/settings.json for env overrides (ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY)
+      // External tools like cc-switch write these, which override MyAgents' provider settings via SDK bug
+      if (pathname === '/api/claude-settings/check-env' && request.method === 'GET') {
+        try {
+          const homeDir = getHomeDirOrNull() || '';
+          if (!homeDir) return jsonResponse({ hasOverrides: false });
+          const settingsPath = join(homeDir, '.claude', 'settings.json');
+          const file = Bun.file(settingsPath);
+          if (!(await file.exists())) return jsonResponse({ hasOverrides: false });
+          const settings = await file.json() as { env?: Record<string, string> };
+          const env = settings?.env;
+          if (!env) return jsonResponse({ hasOverrides: false });
+          const baseUrl = env.ANTHROPIC_BASE_URL || undefined;
+          const apiKey = env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || undefined;
+          if (!baseUrl && !apiKey) return jsonResponse({ hasOverrides: false });
+          return jsonResponse({ hasOverrides: true, baseUrl, hasApiKey: !!apiKey });
+        } catch {
+          return jsonResponse({ hasOverrides: false });
+        }
+      }
+
+      // Clear env overrides from ~/.claude/settings.json
+      if (pathname === '/api/claude-settings/clear-env' && request.method === 'POST') {
+        try {
+          const homeDir = getHomeDirOrNull() || '';
+          if (!homeDir) return jsonResponse({ success: false, error: 'Home directory not found' }, 400);
+          const settingsPath = join(homeDir, '.claude', 'settings.json');
+          const file = Bun.file(settingsPath);
+          if (!(await file.exists())) return jsonResponse({ success: true });
+          const settings = await file.json() as Record<string, unknown>;
+          if (!settings.env) return jsonResponse({ success: true });
+          const env = settings.env as Record<string, string>;
+          delete env.ANTHROPIC_BASE_URL;
+          delete env.ANTHROPIC_API_KEY;
+          delete env.ANTHROPIC_AUTH_TOKEN;
+          // Remove env key entirely if empty
+          if (Object.keys(env).length === 0) {
+            delete settings.env;
+          }
+          // Atomic write: temp file + rename to prevent corruption
+          const tmpPath = settingsPath + '.tmp';
+          await Bun.write(tmpPath, JSON.stringify(settings, null, 2) + '\n');
+          await rename(tmpPath, settingsPath);
+          console.log('[claude-settings] Cleared ANTHROPIC_BASE_URL/API_KEY from ~/.claude/settings.json');
+          return jsonResponse({ success: true });
+        } catch (err) {
+          console.error('[claude-settings] Failed to clear env:', err);
+          return jsonResponse({ success: false, error: err instanceof Error ? err.message : String(err) }, 500);
+        }
       }
 
       // 🔍 Debug endpoint: Expose logger diagnostics via HTTP
@@ -889,7 +1204,7 @@ async function main() {
           }
           const resolvedOutputFile = resolve(outputFile);
           const homeDir = getHomeDirOrNull() || '';
-          const isUnderHome = homeDir && resolvedOutputFile.startsWith(homeDir + '/');
+          const isUnderHome = homeDir && resolvedOutputFile.startsWith(homeDir + sep);
           if (!isUnderHome || !resolvedOutputFile.endsWith('.output')) {
             return jsonResponse({ success: false, error: 'Invalid outputFile path' }, 400);
           }
@@ -1614,7 +1929,7 @@ async function main() {
           }
           // Security: Validate that targetPath doesn't escape currentAgentDir (prevent path traversal)
           const resolvedTarget = resolve(currentAgentDir, targetPath);
-          if (!resolvedTarget.startsWith(currentAgentDir + '/') && resolvedTarget !== currentAgentDir) {
+          if (!resolvedTarget.startsWith(currentAgentDir + sep) && resolvedTarget !== currentAgentDir) {
             return jsonResponse({ error: 'Invalid path: access denied' }, 403);
           }
           console.log('[agent] dir/expand:', targetPath);
@@ -1948,7 +2263,7 @@ async function main() {
             return jsonResponse({ success: false, error: 'Invalid path.' }, 400);
           }
 
-          const parentDir = resolvedOld.substring(0, resolvedOld.lastIndexOf('/'));
+          const parentDir = dirname(resolvedOld);
           const resolvedNew = join(parentDir, newName);
 
           if (!existsSync(resolvedOld)) {
@@ -2025,8 +2340,49 @@ async function main() {
             Bun.spawn(['explorer', '/select,', resolved]);
           } else {
             // Linux: open parent directory
-            const parentDir = resolved.substring(0, resolved.lastIndexOf('/'));
-            Bun.spawn(['xdg-open', parentDir]);
+            Bun.spawn(['xdg-open', dirname(resolved)]);
+          }
+
+          return jsonResponse({ success: true });
+        } catch (error) {
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to open' },
+            500
+          );
+        }
+      }
+
+      // Open file with system default application
+      if (pathname === '/agent/open-with-default' && request.method === 'POST') {
+        try {
+          const payload = await request.json() as { path?: string; agentDir?: string };
+          const targetPath = payload?.path?.trim();
+
+          if (!targetPath) {
+            return jsonResponse({ success: false, error: 'path is required.' }, 400);
+          }
+
+          const effectiveAgentDir = payload?.agentDir || currentAgentDir;
+          const resolved = resolveAgentPath(effectiveAgentDir, targetPath);
+          if (!resolved) {
+            return jsonResponse({ success: false, error: 'Invalid path.' }, 400);
+          }
+
+          if (!existsSync(resolved)) {
+            return jsonResponse({ success: false, error: 'File not found.' }, 404);
+          }
+
+          const isMac = process.platform === 'darwin';
+          const isWin = process.platform === 'win32';
+
+          if (isMac) {
+            Bun.spawn(['open', resolved]);
+          } else if (isWin) {
+            // Use PowerShell Start-Process to avoid cmd /c shell interpretation
+            // which could treat & | > in filenames as command operators
+            Bun.spawn(['powershell', '-NoProfile', '-Command', `Start-Process -FilePath '${resolved.replace(/'/g, "''")}'`]);
+          } else {
+            Bun.spawn(['xdg-open', resolved]);
           }
 
           return jsonResponse({ success: true });
@@ -2051,11 +2407,13 @@ async function main() {
           // Security: Only allow paths under home directory or temp directories
           const homeDir = getHomeDirOrNull() || '';
           const resolvedPath = resolve(fullPath);
-          // Normalize both paths for comparison (handles Windows paths)
-          const normalizedResolved = resolvedPath.toLowerCase().replace(/\\/g, '/');
-          const normalizedHome = homeDir.toLowerCase().replace(/\\/g, '/');
-          const isUnderHome = normalizedHome && normalizedResolved.startsWith(normalizedHome);
-          const isUnderTmp = normalizedResolved.startsWith('/tmp') || normalizedResolved.includes('/temp/');
+          // Cross-platform path comparison: case-insensitive on Windows (drive letter casing)
+          const ci = process.platform === 'win32';
+          const pathEq = (a: string, b: string) => ci ? a.toLowerCase() === b.toLowerCase() : a === b;
+          const pathStartsWith = (p: string, prefix: string) => ci ? p.toLowerCase().startsWith(prefix.toLowerCase()) : p.startsWith(prefix);
+          const isUnderHome = homeDir && (pathStartsWith(resolvedPath, homeDir + sep) || pathEq(resolvedPath, homeDir));
+          const systemTmpDir = tmpdir();
+          const isUnderTmp = pathStartsWith(resolvedPath, systemTmpDir + sep) || pathEq(resolvedPath, systemTmpDir);
           if (!isUnderHome && !isUnderTmp) {
             return jsonResponse({ success: false, error: 'Path not allowed.' }, 403);
           }
@@ -2072,8 +2430,7 @@ async function main() {
           } else if (isWin) {
             Bun.spawn(['explorer', '/select,', resolvedPath]);
           } else {
-            const parentDir = resolvedPath.substring(0, resolvedPath.lastIndexOf('/'));
-            Bun.spawn(['xdg-open', parentDir]);
+            Bun.spawn(['xdg-open', dirname(resolvedPath)]);
           }
 
           return jsonResponse({ success: true });
@@ -2730,6 +3087,23 @@ async function main() {
 
       // ============= END PROVIDER VERIFICATION API =============
 
+      // ============= PROXY API =============
+
+      // POST /api/proxy/set - Hot-reload proxy config into this Sidecar process
+      if (pathname === '/api/proxy/set' && request.method === 'POST') {
+        try {
+          const payload = await request.json();
+          setProxyConfig(payload);
+          return jsonResponse({ success: true });
+        } catch (error) {
+          console.error('[api/proxy/set] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to set proxy config' },
+            500
+          );
+        }
+      }
+
       // ============= MCP API =============
 
       // POST /api/mcp/set - Set MCP servers for current workspace
@@ -3261,6 +3635,11 @@ async function main() {
           // 3. Add builtin commands at the end (so custom/skills can override them)
           commands.push(...BUILTIN_SLASH_COMMANDS);
 
+          // Collect global skill folderNames before dedup (dedup removes global version when project version exists)
+          const globalSkillFolderNames = commands
+            .filter(c => c.source === 'skill' && c.scope === 'user' && c.folderName)
+            .map(c => c.folderName!);
+
           // Deduplicate commands by name (keep first occurrence - custom/skills take precedence over builtin)
           const seenNames = new Set<string>();
           const uniqueCommands = commands.filter(cmd => {
@@ -3271,7 +3650,7 @@ async function main() {
             return true;
           });
 
-          return jsonResponse({ success: true, commands: uniqueCommands });
+          return jsonResponse({ success: true, commands: uniqueCommands, globalSkillFolderNames });
         } catch (error) {
           console.error('[api/commands] Error:', error);
           return jsonResponse(
@@ -3772,6 +4151,55 @@ async function main() {
           console.error('[api/skill] Error:', error);
           return jsonResponse(
             { success: false, error: error instanceof Error ? error.message : 'Failed to delete skill' },
+            500
+          );
+        }
+      }
+
+      // POST /api/skill/copy-to-global - Copy a project skill to global (~/.myagents/skills/)
+      // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
+      if (pathname === '/api/skill/copy-to-global' && request.method === 'POST') {
+        try {
+          const { folderName } = await request.json() as { folderName: string };
+          if (!folderName || typeof folderName !== 'string' || !isValidItemName(folderName)) {
+            return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
+          }
+
+          // Validate project skills directory
+          if (!projectSkillsBaseDir) {
+            return jsonResponse({ success: false, error: '当前没有项目工作目录' }, 400);
+          }
+
+          const srcDir = join(projectSkillsBaseDir, folderName);
+          if (!existsSync(srcDir)) {
+            return jsonResponse({ success: false, error: '项目技能不存在' }, 404);
+          }
+
+          // Check SKILL.md exists in source
+          if (!existsSync(join(srcDir, 'SKILL.md'))) {
+            return jsonResponse({ success: false, error: '项目技能缺少 SKILL.md' }, 400);
+          }
+
+          // Check if already exists in global
+          const destDir = join(userSkillsBaseDir, folderName);
+          if (existsSync(destDir)) {
+            return jsonResponse({ success: false, error: '全局技能中已存在同名技能' }, 409);
+          }
+
+          // Ensure global skills directory exists
+          mkdirSync(userSkillsBaseDir, { recursive: true });
+
+          // Copy the skill folder
+          copyDirRecursiveSync(srcDir, destDir, '[api/skill/copy-to-global]');
+
+          // Sync symlinks into project
+          if (currentAgentDir) syncProjectUserConfig(currentAgentDir);
+
+          return jsonResponse({ success: true, folderName });
+        } catch (error) {
+          console.error('[api/skill/copy-to-global] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to copy skill to global' },
             500
           );
         }
@@ -4884,6 +5312,13 @@ async function main() {
                 apiProtocol: payload.providerEnv.apiProtocol,
               } : undefined,
             });
+
+            // Set IM media context for the im-media tool (send_media)
+            setImMediaContext({
+              botId: payload.botId,
+              chatId: payload.sourceId,
+              platform: payload.source.split('_')[0],
+            });
           }
 
           // Ensure IM session always has HEARTBEAT system prompt appended.
@@ -5101,7 +5536,7 @@ async function main() {
           // --- Gate: Read HEARTBEAT.md from workspace root ---
           // The actual checklist lives in HEARTBEAT.md, not in config.
           // If the file is empty/missing AND no system events AND not high-priority → skip AI call.
-          const heartbeatMdPath = `${currentAgentDir}/HEARTBEAT.md`;
+          const heartbeatMdPath = join(currentAgentDir, 'HEARTBEAT.md');
           let heartbeatMdContent = '';
           try {
             heartbeatMdContent = readFileSync(heartbeatMdPath, 'utf-8').trim();

@@ -180,8 +180,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
   // Enabled sub-agents for sidebar display
   const [enabledAgents, setEnabledAgents] = useState<Record<string, { description: string; prompt?: string; model?: string; scope?: 'user' | 'project' }> | undefined>();
   // Enabled skills/commands for sidebar display
-  const [enabledSkills, setEnabledSkills] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project' }>>([]);
+  const [enabledSkills, setEnabledSkills] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project'; folderName?: string }>>([]);
   const [enabledCommands, setEnabledCommands] = useState<Array<{ name: string; description: string; scope?: 'user' | 'project' }>>([]);
+  const [globalSkillFolderNames, setGlobalSkillFolderNames] = useState<Set<string>>(new Set());
   // Initial tab for workspace config panel (set when opening from capabilities panel)
   const [workspaceConfigInitialTab, setWorkspaceConfigInitialTab] = useState<WorkspaceTab | undefined>();
 
@@ -602,15 +603,35 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
   // Load skills/commands for sidebar display
   const loadSkillsAndCommands = useCallback(async () => {
     try {
-      const response = await apiGet<{ success: boolean; commands: Array<{ name: string; description: string; source: string; scope?: 'user' | 'project' }> }>('/api/commands');
+      const response = await apiGet<{ success: boolean; commands: Array<{ name: string; description: string; source: string; scope?: 'user' | 'project'; folderName?: string }>; globalSkillFolderNames?: string[] }>('/api/commands');
       if (response.success && response.commands) {
-        setEnabledSkills(response.commands.filter(c => c.source === 'skill').map(c => ({ name: c.name, description: c.description, scope: c.scope })));
+        setEnabledSkills(response.commands.filter(c => c.source === 'skill').map(c => ({ name: c.name, description: c.description, scope: c.scope, folderName: c.folderName })));
         setEnabledCommands(response.commands.filter(c => c.source === 'custom').map(c => ({ name: c.name, description: c.description, scope: c.scope })));
+        setGlobalSkillFolderNames(new Set(response.globalSkillFolderNames || []));
       }
     } catch (err) {
       console.error('[Chat] Failed to load skills/commands:', err);
     }
   }, [apiGet]);
+
+  // Sync project skill to global
+  const loadSkillsAndCommandsRef = useRef(loadSkillsAndCommands);
+  loadSkillsAndCommandsRef.current = loadSkillsAndCommands;
+
+  const handleSyncSkillToGlobal = useCallback(async (folderName: string) => {
+    try {
+      const res = await apiPost<{ success: boolean; error?: string }>('/api/skill/copy-to-global', { folderName });
+      if (res.success) {
+        toastRef.current.success('已同步至全局技能');
+        loadSkillsAndCommandsRef.current();
+      } else {
+        toastRef.current.error(res.error || '同步失败');
+      }
+    } catch (err) {
+      console.error('[Chat] Sync skill to global failed:', err);
+      toastRef.current.error('同步失败，请重试');
+    }
+  }, [apiPost]);
 
   // Load capabilities on mount and when workspace config changes (e.g. skill copied, settings saved)
   useEffect(() => {
@@ -1353,8 +1374,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
             enabledAgents={enabledAgents}
             enabledSkills={enabledSkills}
             enabledCommands={enabledCommands}
+            globalSkillFolderNames={globalSkillFolderNames}
             onInsertSlashCommand={handleInsertSlashCommand}
             onOpenSettings={handleOpenSettings}
+            onSyncSkillToGlobal={handleSyncSkillToGlobal}
           />
         </div>
       )}

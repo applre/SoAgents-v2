@@ -15,7 +15,8 @@ import {
   Settings,
   Trash2,
   Upload,
-  PanelRightClose
+  PanelRightClose,
+  ExternalLink
 } from 'lucide-react';
 import { forwardRef, lazy, memo, Suspense, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Tree } from 'react-arborist';
@@ -66,12 +67,16 @@ interface DirectoryPanelProps {
   onInsertReference?: (paths: string[]) => void;
   /** Enabled sub-agent definitions (from Chat.tsx) */
   enabledAgents?: Record<string, { description: string; prompt?: string; model?: string; scope?: 'user' | 'project' }>;
-  enabledSkills?: Array<{ name: string; description: string; scope?: 'user' | 'project' }>;
+  enabledSkills?: Array<{ name: string; description: string; scope?: 'user' | 'project'; folderName?: string }>;
   enabledCommands?: Array<{ name: string; description: string; scope?: 'user' | 'project' }>;
+  /** Set of global skill folderNames (for hiding "sync to global" on already-global skills) */
+  globalSkillFolderNames?: Set<string>;
   /** Insert /command into chat input */
   onInsertSlashCommand?: (command: string) => void;
   /** Open settings panel to a specific tab */
   onOpenSettings?: (tab: Extract<WorkspaceTab, 'skills-commands' | 'agents'>) => void;
+  /** Copy a project skill to global skills */
+  onSyncSkillToGlobal?: (folderName: string) => void;
 }
 
 type FilePreview = {
@@ -116,8 +121,10 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
   enabledAgents,
   enabledSkills,
   enabledCommands,
+  globalSkillFolderNames,
   onInsertSlashCommand,
   onOpenSettings,
+  onSyncSkillToGlobal,
 }, ref) {
   const [directoryInfo, setDirectoryInfo] = useState<DirectoryTree | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -675,6 +682,14 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
     }
   };
 
+  const handleOpenWithDefault = async (path: string) => {
+    try {
+      await apiPost('/agent/open-with-default', { path });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open');
+    }
+  };
+
   const handleRename = async (oldPath: string, newName: string) => {
     try {
       await apiPost('/agent/rename', { oldPath, newName });
@@ -913,6 +928,11 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
           label: '引用',
           icon: <AtSign className="h-4 w-4" />,
           onClick: () => onInsertReference?.([node.path])
+        },
+        {
+          label: '打开',
+          icon: <ExternalLink className="h-4 w-4" />,
+          onClick: () => handleOpenWithDefault(node.path)
         },
         {
           label: '打开所在文件夹',
@@ -1222,8 +1242,10 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
               enabledAgents={enabledAgents}
               enabledSkills={enabledSkills}
               enabledCommands={enabledCommands}
+              globalSkillFolderNames={globalSkillFolderNames}
               onInsertSlashCommand={onInsertSlashCommand}
               onOpenSettings={onOpenSettings}
+              onSyncSkillToGlobal={onSyncSkillToGlobal}
               onExpandChange={updateTreeHeight}
             />
           </div>

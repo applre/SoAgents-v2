@@ -478,6 +478,44 @@ log::info!("internal message");
 
 ---
 
+## 双 AI Review 编排
+
+> **核心原则**：用两个不同 AI 引擎并行 review，交叉验证，发现的问题直接修复。
+
+### 触发方式
+
+| 用户指令 | 行为 |
+|----------|------|
+| **"review"** | 并行启动两个后台 Task agent，等待两份报告，综合后直接修复问题 |
+| **"多轮 review"** | 循环执行：并行 review → 综合 → 修复 → 再次 review，直到无 critical/warning 级别问题 |
+
+### 编排流程
+
+```
+用户说 "review"
+    │
+    ├─ Task (run_in_background) ──→ /review-by-cc
+    │   Claude Code 子 Agent：读 git diff + CLAUDE.md → 逐项检查规范 → 结构化报告
+    │
+    └─ Task (run_in_background) ──→ /review-by-codex
+        调用 codex exec -s read-only --full-auto -m o3 → OpenAI 视角独立 review
+    │
+    ▼ 两个都完成
+    主 Agent 综合两份报告 → 直接修复发现的问题
+    │
+    ▼ 如果是 "多轮 review"
+    再次循环，直到两份报告都无 critical/warning
+```
+
+### 关键约束
+
+- **Codex 必须只读**：始终使用 `-s read-only`，review 过程不得修改文件
+- **两个 skill 独立执行**：子 Agent 之间无依赖，必须并行启动
+- **主 Agent 负责修复**：子 Agent 只负责发现问题，修复由主 Agent 执行
+- **报告格式统一**：两个 skill 输出相同结构（Summary → Critical → Warnings → Suggestions → Passed）
+
+---
+
 ## 常见问题
 
 | 问题 | 排查方向 |

@@ -936,6 +936,19 @@ fn is_port_available(port: u16) -> bool {
     std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok()
 }
 
+/// Strip the Windows `\\?\` extended-length path prefix.
+/// Tauri's resource_dir() returns canonicalized paths with this prefix on Windows,
+/// but Bun cannot handle `\\?\` prefixed paths — it silently hangs without executing JS.
+#[cfg(target_os = "windows")]
+fn strip_win_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix("\\\\?\\") {
+        PathBuf::from(stripped)
+    } else {
+        path
+    }
+}
+
 /// Helper: check if bun exists at the given directory with platform-specific names
 #[cfg(target_os = "windows")]
 fn check_bun_in_dir(dir: &std::path::Path, label: &str) -> Option<PathBuf> {
@@ -1269,6 +1282,12 @@ pub fn start_tab_sidecar<R: Runtime>(
         .ok_or_else(|| "Bun executable not found".to_string())?;
     let script_path = find_server_script(app_handle)
         .ok_or_else(|| "Server script not found".to_string())?;
+
+    // Windows: strip \\?\ prefix — Bun silently hangs on extended-length paths
+    #[cfg(target_os = "windows")]
+    let bun_path = strip_win_prefix(bun_path);
+    #[cfg(target_os = "windows")]
+    let script_path = strip_win_prefix(script_path);
 
     // Allocate port
     let port = manager_guard.allocate_port()?;
@@ -1751,6 +1770,12 @@ fn create_new_session_sidecar<R: Runtime>(
         .ok_or_else(|| "Bun executable not found".to_string())?;
     let script_path = find_server_script(app_handle)
         .ok_or_else(|| "Server script not found".to_string())?;
+
+    // Windows: strip \\?\ prefix — Bun silently hangs on extended-length paths
+    #[cfg(target_os = "windows")]
+    let bun_path = strip_win_prefix(bun_path);
+    #[cfg(target_os = "windows")]
+    let script_path = strip_win_prefix(script_path);
 
     // Allocate port
     let port = manager_guard.allocate_port()?;

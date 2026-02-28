@@ -13,6 +13,8 @@ use std::sync::Once;
 use std::thread;
 use std::time::Duration;
 
+use crate::{ulog_info, ulog_error};
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -148,8 +150,9 @@ pub fn cleanup_stale_sidecars() {
         kill_windows_processes_by_pattern(".myagents\\mcp\\");
 
         // 4. Clean up MCP servers launched via bun x / npx
-        kill_windows_processes_by_pattern("@playwright\\mcp");
-        kill_windows_processes_by_pattern("@anthropic-ai\\mcp");
+        // npm package names use forward slashes even on Windows
+        kill_windows_processes_by_pattern("@playwright/mcp");
+        kill_windows_processes_by_pattern("@anthropic-ai/mcp");
 
         // Verify cleanup completed (max 1 second wait)
         let start = std::time::Instant::now();
@@ -1389,9 +1392,9 @@ pub fn start_tab_sidecar<R: Runtime>(
     }
 
     // 关键诊断日志：打印当前可执行文件路径，确认运行的是正确版本
-    log::info!("[sidecar] current_exe = {:?}", std::env::current_exe().ok());
+    ulog_info!("[sidecar] current_exe = {:?}", std::env::current_exe().ok());
 
-    log::info!(
+    ulog_info!(
         "[sidecar] Spawning: bun={:?}, script={:?}, port={}, is_global={}",
         bun_path, script_path, port, is_global
     );
@@ -1402,26 +1405,26 @@ pub fn start_tab_sidecar<R: Runtime>(
         format!("Failed to spawn sidecar: {}", e)
     })?;
 
-    log::info!("[sidecar] Process spawned with pid: {:?}", child.id());
+    ulog_info!("[sidecar] Process spawned with pid: {:?}", child.id());
 
-    // 启动线程捕获 stdout
+    // 启动线程捕获 stdout → 写入统一日志（确保 Bun 输出在 unified log 可见）
     if let Some(stdout) = child.stdout.take() {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                log::info!("[bun-out][{}] {}", tab_id_clone, line);
+                ulog_info!("[bun-out][{}] {}", tab_id_clone, line);
             }
         });
     }
 
-    // 启动线程捕获 stderr（关键：这里会打印 Bun 的错误信息）
+    // 启动线程捕获 stderr → 写入统一日志
     if let Some(stderr) = child.stderr.take() {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().flatten() {
-                log::error!("[bun-err][{}] {}", tab_id_clone, line);
+                ulog_error!("[bun-err][{}] {}", tab_id_clone, line);
             }
         });
     }
@@ -1461,9 +1464,8 @@ pub fn start_tab_sidecar<R: Runtime>(
             Ok(port)
         }
         Err(e) => {
-            // Health check failed — collect diagnostics into error message
-            // so it surfaces in the unified log (via logger::error in commands.rs)
-            log::error!("[sidecar] Health check failed: {}", e);
+            // Health check failed — diagnostics go to unified log directly
+            ulog_error!("[sidecar] Health check failed: {}", e);
             let mut diag = e.clone();
 
             let mut manager_guard = manager.lock().map_err(|_| e.clone())?;
@@ -1471,32 +1473,23 @@ pub fn start_tab_sidecar<R: Runtime>(
                 match instance.process.try_wait() {
                     Ok(Some(status)) => {
                         let detail = format!(" | process exited: {:?}", status);
-                        log::error!("[sidecar]{}", detail);
+                        ulog_error!("[sidecar]{}", detail);
                         diag.push_str(&detail);
                     }
                     Ok(None) => {
                         let detail = " | process alive but not listening";
-                        log::error!("[sidecar]{}", detail);
+                        ulog_error!("[sidecar]{}", detail);
                         diag.push_str(detail);
                     }
                     Err(wait_err) => {
                         let detail = format!(" | try_wait error: {}", wait_err);
-                        log::error!("[sidecar]{}", detail);
+                        ulog_error!("[sidecar]{}", detail);
                         diag.push_str(&detail);
                     }
                 }
 
-                // stderr is captured by a background thread, but try to grab any remaining
-                if let Some(ref mut stderr) = instance.process.stderr.take() {
-                    use std::io::Read;
-                    let mut output = String::new();
-                    if stderr.read_to_string(&mut output).is_ok() && !output.is_empty() {
-                        let truncated = if output.len() > 500 { &output[..500] } else { &output };
-                        let detail = format!(" | stderr: {}", truncated);
-                        log::error!("[sidecar]{}", detail);
-                        diag.push_str(&detail);
-                    }
-                }
+                // Note: stderr is already captured by the drain thread → ulog_error!
+                // No need to .take() here (it was already taken at spawn time)
             }
 
             // Remove the failed instance
@@ -1851,14 +1844,14 @@ fn create_new_session_sidecar<R: Runtime>(
         format!("Failed to spawn sidecar: {}", e)
     })?;
 
-    // Capture stdout/stderr for logging
+    // Capture stdout/stderr → 写入统一日志
     let session_id_clone = session_id.to_string();
     if let Some(stdout) = child.stdout.take() {
         let session_id_for_log = session_id_clone.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                log::info!("[bun-out][session:{}] {}", session_id_for_log, line);
+                ulog_info!("[bun-out][session:{}] {}", session_id_for_log, line);
             }
         });
     }
@@ -1868,7 +1861,7 @@ fn create_new_session_sidecar<R: Runtime>(
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().flatten() {
-                log::error!("[bun-err][session:{}] {}", session_id_for_log, line);
+                ulog_error!("[bun-err][session:{}] {}", session_id_for_log, line);
             }
         });
     }
@@ -2471,7 +2464,8 @@ fn kill_windows_processes_by_pattern(pattern: &str) {
     let mut killed = 0;
     for pid in &pids {
         let mut cmd = Command::new("taskkill");
-        cmd.args(["/F", "/PID", &pid.to_string()])
+        // /T = kill process tree (children too), /F = force
+        cmd.args(["/T", "/F", "/PID", &pid.to_string()])
             .creation_flags(CREATE_NO_WINDOW);
         if cmd.output().is_ok() {
             killed += 1;
@@ -2479,7 +2473,7 @@ fn kill_windows_processes_by_pattern(pattern: &str) {
     }
 
     if killed > 0 {
-        log::info!("[sidecar] Killed {} processes matching '{}'", killed, pattern);
+        eprintln!("[sidecar] Killed {} processes (tree) matching '{}'", killed, pattern);
     }
 }
 

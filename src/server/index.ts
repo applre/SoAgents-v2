@@ -45,6 +45,9 @@ function crashLog(prefix: string, ...args: unknown[]) {
   } catch { /* ignore */ }
 }
 
+// Top-level beacon: fires BEFORE main(), proves JS module loading succeeded
+try { process.stderr.write(`[startup] module loaded, pid=${process.pid}\n`); } catch { /* ignore */ }
+
 process.on('exit', (code) => {
   crashLog('EXIT', `code=${code}`);
 });
@@ -876,15 +879,20 @@ function buildCronEventPrompt(
  * may not be reached yet and zero BUN logs appear.
  */
 function startupBeacon(step: string): void {
+  // Write to stderr — captured by Rust drain thread → unified log
+  try { process.stderr.write(`[startup] ${step}\n`); } catch { /* ignore */ }
+  // Also write directly to unified log file
   try {
     const now = new Date();
     const y = now.getFullYear();
     const m = String(now.getMonth() + 1).padStart(2, '0');
     const d = String(now.getDate()).padStart(2, '0');
-    const filePath = join(homedir(), '.myagents', 'logs', `unified-${y}-${m}-${d}.log`);
+    const logsDir = join(homedir(), '.myagents', 'logs');
+    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+    const filePath = join(logsDir, `unified-${y}-${m}-${d}.log`);
     const ts = now.toISOString();
     appendFileSync(filePath, `${ts} [BUN  ] [INFO ] [startup] ${step}\n`);
-  } catch { /* ignore — logs dir may not exist yet */ }
+  } catch { /* ignore */ }
 }
 
 async function main() {

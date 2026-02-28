@@ -538,6 +538,7 @@ pub async fn start_im_bot<R: Runtime>(
     let current_provider_env = Arc::new(tokio::sync::RwLock::new(provider_env));
     // MCP servers JSON — hot-reloadable
     let mcp_servers_json = Arc::new(tokio::sync::RwLock::new(config.mcp_servers_json.clone()));
+    let bot_name_for_loop = config.name.clone();
     let bind_code_for_loop = bind_code.clone();
     let bot_id_for_loop = bot_id.clone();
     let allowed_users_for_loop = Arc::clone(&allowed_users);
@@ -1279,6 +1280,7 @@ pub async fn start_im_bot<R: Runtime>(
                     let task_locks = Arc::clone(&peer_locks_for_loop);
                     let task_pending_approvals = Arc::clone(&pending_approvals_for_loop);
                     let task_bot_id = bot_id_for_loop.clone();
+                    let task_bot_name = bot_name_for_loop.clone();
                     let task_group_history = Arc::clone(&group_history_for_loop);
                     let task_group_activation = Arc::clone(&group_activation_for_loop);
                     let task_group_tools_deny = Arc::clone(&group_tools_deny_for_loop);
@@ -1406,6 +1408,7 @@ pub async fn start_im_bot<R: Runtime>(
                             images,
                             &task_pending_approvals,
                             Some(&task_bot_id),
+                            task_bot_name.as_deref(),
                             group_ctx.as_ref(),
                         )
                         .await
@@ -1490,6 +1493,7 @@ pub async fn start_im_bot<R: Runtime>(
                                         None, // buffered messages don't preserve attachments
                                         &task_pending_approvals,
                                         Some(&task_bot_id),
+                                        task_bot_name.as_deref(),
                                         None, // buffered messages don't carry group context
                                     )
                                     .await
@@ -1970,6 +1974,7 @@ async fn stream_to_im<A: adapter::ImStreamAdapter>(
     images: Option<&Vec<serde_json::Value>>,
     pending_approvals: &PendingApprovals,
     bot_id: Option<&str>,
+    bot_name: Option<&str>,
     group_context: Option<&GroupStreamContext>,
 ) -> Result<Option<String>, RouteError> {
     // Build request body (same as original route_to_sidecar)
@@ -1999,6 +2004,9 @@ async fn stream_to_im<A: adapter::ImStreamAdapter>(
     }
     if let Some(bid) = bot_id {
         body["botId"] = json!(bid);
+    }
+    if let Some(bn) = bot_name {
+        body["botName"] = json!(bn);
     }
     // Group context fields (v0.1.28)
     if let Some(gc) = group_context {
@@ -2545,6 +2553,7 @@ pub async fn cmd_start_im_bot(
     feishuAppId: Option<String>,
     feishuAppSecret: Option<String>,
     heartbeatConfigJson: Option<String>,
+    botName: Option<String>,
 ) -> Result<ImBotStatus, String> {
     let im_platform = match platform.as_deref() {
         Some("feishu") => ImPlatform::Feishu,
@@ -2560,6 +2569,7 @@ pub async fn cmd_start_im_bot(
 
     let config = ImConfig {
         platform: im_platform,
+        name: botName,
         bot_token: botToken,
         allowed_users: allowedUsers,
         permission_mode: permissionMode,

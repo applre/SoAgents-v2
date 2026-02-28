@@ -194,6 +194,7 @@ export default function ImBotWizard({
             feishuAppId: cfg.feishuAppId || null,
             feishuAppSecret: cfg.feishuAppSecret || null,
             heartbeatConfigJson: cfg.heartbeat ? JSON.stringify(cfg.heartbeat) : null,
+            botName: cfg.name || null,
         };
     }, []);
 

@@ -172,7 +172,37 @@ pub struct SseProxyState {
 - `trafficLightPosition: { x: 14, y: 20 }` - 交通灯居中
 - `data-tauri-drag-region` - 拖拽区域标记
 
-### 5. Session API (`src/server/`)
+### 5. 系统提示词组装 (`src/server/system-prompt.ts`)
+
+统一三层 Prompt 架构，确保 AI 在所有交互场景中都知道自身身份和上下文：
+
+| 层 | 用途 | 何时包含 |
+|----|------|----------|
+| **L1** 基础身份 | 告诉 AI 运行在 MyAgents 产品中 | **始终** |
+| **L2** 交互方式 | 桌面客户端 / IM Bot（含平台、聊天类型、Bot 名称） | **互斥选一** |
+| **L3** 场景指令 | Cron 定时任务上下文 / IM 心跳机制 | **按需叠加** |
+
+**核心类型**：
+```typescript
+export type InteractionScenario =
+  | { type: 'desktop' }
+  | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string }
+  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean };
+```
+
+**组装矩阵**：
+
+| 场景 | L1 | L2 | L3 |
+|------|----|----|-----|
+| 桌面聊天 | base-identity | channel-desktop | — |
+| IM Bot | base-identity | channel-im | heartbeat |
+| Cron 任务 | base-identity | channel-desktop | cron-task |
+
+**调用方式**：`agent-session.ts` 维护 process-global `currentScenario`，`index.ts` 在各场景入口调用 `setInteractionScenario()` 设置，session 启动时通过 `buildSystemPromptAppend(currentScenario)` 注入到 SDK 的 `systemPrompt.append`。
+
+> **注意**：模板内容以字符串常量内联在 `system-prompt.ts` 中（因 bun build 会硬编码 `__dirname`，禁止用 `readFileSync` 加载资源）。
+
+### 6. Session API (`src/server/`)
 
 | 文件 | 用途 |
 |------|------|
@@ -180,7 +210,7 @@ pub struct SseProxyState {
 | `types/session.ts` | Session 类型定义 |
 | `agent-session.ts` | 会话状态管理，包含 `resetSession()` |
 
-### 6. IM Bot 多 Bot 架构 (`src-tauri/src/im/`)
+### 7. IM Bot 多 Bot 架构 (`src-tauri/src/im/`)
 
 **IM 层运行在 Rust 中**，通过 `SidecarOwner::ImBot` 复用 SidecarManager 获取 Bun Sidecar 进行 AI 对话。
 
@@ -202,7 +232,7 @@ pub type ManagedImBots = Arc<Mutex<HashMap<String, ImBotInstance>>>;
 
 详见 [IM 集成技术架构](./im_integration_architecture.md)。
 
-### 7. Session 切换场景 (v0.1.10)
+### 8. Session 切换场景 (v0.1.10)
 
 | 场景 | 描述 | 行为 |
 |------|------|------|

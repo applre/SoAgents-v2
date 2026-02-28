@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.31] - 2026-03-01
+
+### Changed
+- **统一系统提示词架构**：重构为三层 Prompt 架构（L1 基础身份 + L2 交互方式 + L3 场景指令），所有场景统一使用 append 模式
+  - AI 始终知道自己运行在 MyAgents 产品中（桌面聊天、IM Bot、Cron 任务）
+  - 旧 SystemPromptConfig（preset/replace/append 三模式）替换为 InteractionScenario 类型
+  - IM Bot 启动时传递 botName，AI 感知自身 Bot 名称
+  - 模板内容内联为字符串常量（bun build 禁止 `__dirname`）
+
+---
+
 ## [0.1.30] - 2026-02-28
 
 ### Added

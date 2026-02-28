@@ -205,6 +205,8 @@ impl ImMessage {
 pub struct ImConfig {
     #[serde(default = "default_platform")]
     pub platform: ImPlatform,
+    #[serde(default)]
+    pub name: Option<String>,
     pub bot_token: String,
     pub allowed_users: Vec<String>,
     pub permission_mode: String,
@@ -244,6 +246,7 @@ impl Default for ImConfig {
     fn default() -> Self {
         Self {
             platform: ImPlatform::Telegram,
+            name: None,
             bot_token: String::new(),
             allowed_users: Vec::new(),
             permission_mode: "plan".to_string(),

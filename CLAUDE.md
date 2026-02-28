@@ -352,6 +352,7 @@ await updateImBotConfig(botId, updates);
 | 后端新增 SSE 事件不注册白名单 | 前端永远收不到该事件（静默丢弃） | 在 `SseConnection.ts` 的 `JSON_EVENTS` 中注册新事件名 |
 | 裸 `reqwest::Client::builder()` 连接本地 Sidecar | 系统代理拦截 localhost → 502 | 必须用 `crate::local_http::builder()` / `blocking_builder()` |
 | 日志日期用 UTC（`toISOString`）而非本地日期 | Bun/Rust 日志写入不同文件，排查时找不到完整日志 | 统一使用本地日期（`UnifiedLogger.ts` 的 `getTodayDate()`，已修复勿回退） |
+| Sidecar 代码使用 `__dirname` / `readFileSync` 加载资源 | bun build 编译时硬编码 `__dirname`，生产环境路径错误 | 使用内联字符串常量，或 `getScriptDir()` 运行时取路径 |
 
 ---
 

@@ -450,78 +450,29 @@ function abortPersistentSession(): void {
   querySession?.interrupt().catch(() => {});
 }
 
-// ===== System Prompt Configuration =====
-// Supports three modes:
-// - 'preset': Use default claude_code system prompt (default)
-// - 'replace': Completely replace with custom system prompt
-// - 'append': Append content to the default claude_code system prompt
-export type SystemPromptMode = 'preset' | 'replace' | 'append';
+// ===== Interaction Scenario (unified system prompt) =====
+import { buildSystemPromptAppend, type InteractionScenario } from './system-prompt';
 
-export type SystemPromptConfig =
-  | { mode: 'preset' }
-  | { mode: 'replace'; content: string }
-  | { mode: 'append'; content: string };
-
-let currentSystemPromptConfig: SystemPromptConfig = { mode: 'preset' };
+let currentScenario: InteractionScenario = { type: 'desktop' };
 
 /**
- * Set custom system prompt configuration.
- * This affects the next session creation (when query() is called).
- *
- * @param config - System prompt configuration
- *   - { mode: 'preset' }: Use default claude_code preset
- *   - { mode: 'replace', content: '...' }: Replace with custom system prompt
- *   - { mode: 'append', content: '...' }: Append to claude_code preset
+ * Set the interaction scenario for the current session.
+ * This determines the system prompt layers (identity + channel + scenario instructions).
  */
-export function setSystemPromptConfig(config: SystemPromptConfig): void {
-  currentSystemPromptConfig = config;
+export function setInteractionScenario(scenario: InteractionScenario): void {
+  currentScenario = scenario;
   if (isDebugMode) {
-    console.log(`[agent] System prompt config set: mode=${config.mode}${config.mode !== 'preset' ? `, content length=${config.content.length}` : ''}`);
+    console.log(`[agent] Interaction scenario: ${scenario.type}`);
   }
 }
 
 /**
- * Clear system prompt configuration back to default preset.
+ * Reset interaction scenario to default (desktop).
  */
-export function clearSystemPromptConfig(): void {
-  currentSystemPromptConfig = { mode: 'preset' };
+export function resetInteractionScenario(): void {
+  currentScenario = { type: 'desktop' };
   if (isDebugMode) {
-    console.log('[agent] System prompt config cleared to default preset');
-  }
-}
-
-/**
- * Get current system prompt configuration.
- * Returns a shallow copy to prevent external mutation.
- */
-export function getSystemPromptConfig(): SystemPromptConfig {
-  // Return a copy to prevent external mutation of internal state
-  return { ...currentSystemPromptConfig };
-}
-
-/**
- * Build the systemPrompt option for SDK query() call.
- * Translates our config format to SDK's expected format.
- */
-function buildSystemPromptOption(): string | { type: 'preset'; preset: 'claude_code'; append?: string } {
-  switch (currentSystemPromptConfig.mode) {
-    case 'replace':
-      // Complete replacement with custom system prompt
-      return currentSystemPromptConfig.content;
-    case 'append':
-      // Use preset with appended content
-      return {
-        type: 'preset' as const,
-        preset: 'claude_code' as const,
-        append: currentSystemPromptConfig.content
-      };
-    case 'preset':
-    default:
-      // Default preset without modifications
-      return {
-        type: 'preset' as const,
-        preset: 'claude_code' as const
-      };
+    console.log('[agent] Interaction scenario reset to desktop');
   }
 }
 // SDK ready signal - prevents messageGenerator from yielding before SDK's ProcessTransport is ready
@@ -3742,7 +3693,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           broadcast('chat:debug-message', message);
         }
       },
-      systemPrompt: buildSystemPromptOption(),
+      systemPrompt: {
+        type: 'preset' as const,
+        preset: 'claude_code' as const,
+        append: buildSystemPromptAppend(currentScenario),
+      },
       cwd: agentDir,
       includePartialMessages: true,
       mcpServers: buildSdkMcpServers(),

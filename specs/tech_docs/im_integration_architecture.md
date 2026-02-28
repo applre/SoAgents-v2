@@ -95,6 +95,7 @@ async fn cmd_start_im_bot(
     providerEnvJson: Option<String>,
     mcpServersJson: Option<String>,
     availableProvidersJson: Option<String>,
+    botName: Option<String>,         // Bot 显示名称，传入系统提示词
 ) -> Result<ImBotStatus, String>;
 
 /// 停止指定 Bot
@@ -219,7 +220,7 @@ Per-Message Task:
     ├── ensure_sidecar()：获取/创建 Sidecar
     ├── 若新 Sidecar → 同步 AI 配置（model + MCP servers）
     │
-    ├── POST /api/im/chat → SSE 流
+    ├── POST /api/im/chat → SSE 流（含 botName 用于系统提示词）
     │     ├── "partial" 事件 → 节流编辑消息（≥1s 间隔，截断 4000 字符）
     │     ├── "block-end" 事件 → 定稿（>4096 字符则分片发送）
     │     ├── "complete" 事件 → 返回 sessionId

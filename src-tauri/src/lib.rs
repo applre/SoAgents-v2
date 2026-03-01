@@ -116,6 +116,8 @@ pub fn run() {
             commands::cmd_initialize_bundled_workspace,
             commands::cmd_create_bot_workspace,
             commands::cmd_remove_bot_workspace,
+            // GitHub CLI check
+            commands::cmd_check_gh_cli,
             // Cron task commands
             cron_task::cmd_create_cron_task,
             cron_task::cmd_start_cron_task,

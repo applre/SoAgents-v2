@@ -545,3 +545,43 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+// ============= GitHub CLI Check =============
+
+#[derive(serde::Serialize)]
+pub struct GhCliStatus {
+    pub available: bool,
+    pub authenticated: bool,
+    pub version: Option<String>,
+}
+
+#[tauri::command]
+pub fn cmd_check_gh_cli() -> Result<GhCliStatus, String> {
+    let version_output = std::process::Command::new("gh")
+        .args(["--version"])
+        .output();
+    let version = match version_output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .map(|l| l.to_string())
+        }
+        _ => {
+            return Ok(GhCliStatus {
+                available: false,
+                authenticated: false,
+                version: None,
+            })
+        }
+    };
+    let auth_output = std::process::Command::new("gh")
+        .args(["auth", "status"])
+        .output();
+    let authenticated = matches!(auth_output, Ok(output) if output.status.success());
+    Ok(GhCliStatus {
+        available: true,
+        authenticated,
+        version,
+    })
+}

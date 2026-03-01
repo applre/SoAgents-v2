@@ -149,6 +149,8 @@ export interface Project {
   // Workspace-level MCP enabled servers (IDs of globally enabled MCPs that are turned on for this workspace)
   // null/undefined = none enabled, array of IDs = those MCPs are enabled for this workspace
   mcpEnabledServers?: string[];
+  /** Internal projects (e.g. ~/.myagents diagnostic workspace) hidden from Launcher */
+  internal?: boolean;
 }
 
 /**

@@ -4,7 +4,7 @@
  * with workspace selector integrated into the input toolbar
  */
 
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 
 import SimpleChatInput, { type ImageAttachment } from '@/components/SimpleChatInput';
 import WorkspaceSelector from './WorkspaceSelector';
@@ -36,6 +36,8 @@ interface BrandSectionProps {
     mcpServers?: Array<{ id: string; name: string; description?: string }>;
     onWorkspaceMcpToggle?: (serverId: string, enabled: boolean) => void;
     onRefreshProviders?: () => void;
+    // Navigation
+    onGoToSettings?: () => void;
 }
 
 export default memo(function BrandSection({
@@ -60,11 +62,23 @@ export default memo(function BrandSection({
     mcpServers,
     onWorkspaceMcpToggle,
     onRefreshProviders,
+    onGoToSettings,
 }: BrandSectionProps) {
     const handleSend = useCallback((text: string, images?: ImageAttachment[]) => {
         onSend(text, images);
         return undefined; // SimpleChatInput expects boolean | void
     }, [onSend]);
+
+    // Check if any provider is available (has valid subscription or API key)
+    const hasAnyProvider = useMemo(() => {
+        return providers?.some(p => {
+            if (p.type === 'subscription') {
+                const v = providerVerifyStatus?.[p.id];
+                return v?.status === 'valid' && !!v?.accountEmail;
+            }
+            return !!apiKeys?.[p.id] && providerVerifyStatus?.[p.id]?.status !== 'invalid';
+        }) ?? false;
+    }, [providers, apiKeys, providerVerifyStatus]);
 
     return (
         <section className="flex flex-1 flex-col items-center px-12">
@@ -110,6 +124,18 @@ export default memo(function BrandSection({
                         }
                     />
                 </div>
+                {!hasAnyProvider && (
+                    <p className="mt-3 text-center text-[13px] text-[var(--ink-muted)]">
+                        ✨ 只需一步，即刻开启 AI 之旅 —
+                        <button
+                            type="button"
+                            onClick={onGoToSettings}
+                            className="ml-1 text-[var(--accent-warm)] hover:underline"
+                        >
+                            配置模型供应商 →
+                        </button>
+                    </p>
+                )}
             </div>
         </section>
     );

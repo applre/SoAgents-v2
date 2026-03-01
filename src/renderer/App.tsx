@@ -24,6 +24,35 @@ import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson, apiPostJson } from '@/api/apiFetch';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
+import { ensureSelfAwarenessWorkspace } from '@/config/configService';
+
+// ============================================================
+// Bug Report Prompt Builder
+// ============================================================
+
+function buildBugReportPrompt(
+  description: string,
+  submitMode: 'github' | 'anonymous',
+  appVersion: string,
+): string {
+  const submitInstruction = submitMode === 'github'
+    ? '分析完成后，请使用 `gh issue create` 命令将报告提交到 hAcKlyc/MyAgents 仓库，标签设为 bug,user-report。'
+    : '分析完成后，请将完整报告以 Markdown 格式输出，方便用户复制提交。';
+  return [
+    `## 问题诊断任务`,
+    ``,
+    `**App 版本**: ${appVersion}`,
+    ``,
+    `### 用户描述`,
+    `> ${description}`,
+    ``,
+    `### 请按照 CLAUDE.md 指引执行`,
+    `1. 搜索今天的统一日志（./logs/unified-*.log），定位相关错误和警告`,
+    `2. 读取 config.json 了解环境配置（报告中脱敏 API Key）`,
+    `3. 综合分析，生成结构化诊断报告（环境 + 日志分析 + 疑似原因）`,
+    `4. ${submitInstruction}`,
+  ].join('\n');
+}
 
 // ============================================================
 // MemoizedTabContent — prevents re-rendering tabs whose props haven't changed.
@@ -140,7 +169,8 @@ export default function App() {
   }, []);
 
   // App config for tray behavior (shared via ConfigProvider — no CONFIG_CHANGED event needed)
-  const { config } = useConfig();
+  // Also get projects + CRUD actions for bug report (ensureSelfAwarenessWorkspace needs them)
+  const { config, providers: appProviders, projects: configProjects, addProject: configAddProject, patchProject: configPatchProject } = useConfig();
 
   // Settings initial section state (for deep linking to specific section)
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
@@ -155,6 +185,12 @@ export default function App() {
 
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+
+  const appProvidersRef = useRef(appProviders);
+  appProvidersRef.current = appProviders;
+
+  const configProjectsRef = useRef(configProjects);
+  configProjectsRef.current = configProjects;
 
   // Per-tab loading state (keyed by tabId)
   const [loadingTabs, setLoadingTabs] = useState<Record<string, boolean>>({});
@@ -1245,6 +1281,71 @@ export default function App() {
       window.removeEventListener(CUSTOM_EVENTS.JUMP_TO_TAB, handleJumpToTab as EventListener);
     };
   }, []);
+
+  // Listen for LAUNCH_BUG_REPORT custom event (AI-powered bug reporting)
+  useEffect(() => {
+    const handleLaunchBugReport = async (event: CustomEvent<{
+      description: string;
+      submitMode: 'github' | 'anonymous';
+      appVersion: string;
+    }>) => {
+      const { description, submitMode, appVersion } = event.detail;
+      try {
+        // --- Pre-checks (before any Tab mutation) ---
+
+        const provider = appProvidersRef.current[0];
+        if (!provider) {
+          console.error('[App] No providers available for bug report');
+          return;
+        }
+
+        if (tabsRef.current.length >= MAX_TABS) {
+          console.warn(`[App] Max tabs (${MAX_TABS}) reached, cannot open bug report`);
+          return;
+        }
+
+        // Ensure ~/.myagents registered as internal project + CLAUDE.md exists
+        // Uses ConfigProvider actions so both disk AND React state are updated
+        const project = await ensureSelfAwarenessWorkspace(
+          configProjectsRef.current,
+          configAddProject,
+          configPatchProject,
+        );
+        if (!project) {
+          console.error('[App] ensureSelfAwarenessWorkspace returned null');
+          return;
+        }
+
+        // --- All checks passed, safe to create Tab ---
+
+        const initialMessage: InitialMessage = {
+          text: buildBugReportPrompt(description, submitMode, appVersion),
+        };
+
+        const newTab = createNewTab();
+        setTabs((prev) => [...prev, newTab]);
+        setActiveTabId(newTab.id);
+        activeTabIdRef.current = newTab.id;
+
+        await handleLaunchProject(project, provider, undefined, initialMessage);
+
+        // Override tab title
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === newTab.id ? { ...t, title: '问题诊断' } : t
+          )
+        );
+      } catch (err) {
+        console.error('[App] Failed to launch bug report:', err);
+      }
+    };
+    const listener = ((e: Event) => { void handleLaunchBugReport(e as CustomEvent); }) as EventListener;
+    window.addEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, listener);
+    return () => {
+      window.removeEventListener(CUSTOM_EVENTS.LAUNCH_BUG_REPORT, listener);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via refs, configAdd/patchProject are stable useCallbacks
+  }, [configAddProject, configPatchProject]);
 
   // Note: CRON_TASK_STOPPED event listener removed
   // With Session-centric Sidecar (Owner model), stopping a cron task only releases

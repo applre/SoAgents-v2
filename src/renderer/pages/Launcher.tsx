@@ -18,6 +18,7 @@ import CronTaskDetailPanel from '@/components/CronTaskDetailPanel';
 import { BrandSection, RecentTasks, WorkspaceCard } from '@/components/launcher';
 import { useConfig } from '@/hooks/useConfig';
 import { type Project, type Provider, type PermissionMode, type McpServerDefinition } from '@/config/types';
+import { CUSTOM_EVENTS } from '../../shared/constants';
 import {
     getAllMcpServers,
     getEnabledMcpServerIds,
@@ -54,6 +55,10 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         refreshProviderData,
         updateConfig,
     } = useConfig();
+
+    // Filter out internal projects (e.g. ~/.myagents diagnostic workspace)
+    const visibleProjects = useMemo(() => projects.filter(p => !p.internal), [projects]);
+
     const [_addError, setAddError] = useState<string | null>(null);
     const [launchingProjectId, setLaunchingProjectId] = useState<string | null>(null);
     const [showLogs, setShowLogs] = useState(false);
@@ -76,20 +81,20 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     }, [config.defaultWorkspacePath]);
 
     const [selectedWorkspace, setSelectedWorkspace] = useState<Project | null>(() =>
-        resolveDefaultWorkspace(projects)
+        resolveDefaultWorkspace(visibleProjects)
     );
 
-    // Sync selectedWorkspace when projects change (e.g., after first project is added,
+    // Sync selectedWorkspace when visible projects change (e.g., after first project is added,
     // or after patchProject updates a project's settings from Chat tab)
     useEffect(() => {
         setSelectedWorkspace(prev => {
-            if (!prev) return resolveDefaultWorkspace(projects);
+            if (!prev) return resolveDefaultWorkspace(visibleProjects);
             // Always use the latest project data (not stale prev reference)
             // so that settings changed in Chat via patchProject are reflected
-            const updated = projects.find(p => p.id === prev.id);
-            return updated ?? resolveDefaultWorkspace(projects);
+            const updated = visibleProjects.find(p => p.id === prev.id);
+            return updated ?? resolveDefaultWorkspace(visibleProjects);
         });
-    }, [projects, resolveDefaultWorkspace]);
+    }, [visibleProjects, resolveDefaultWorkspace]);
 
     const [launcherPermissionMode, setLauncherPermissionMode] = useState<PermissionMode>(config.defaultPermissionMode);
     const [launcherProviderId, setLauncherProviderId] = useState<string | undefined>();
@@ -208,6 +213,13 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-create when workspace ID changes
     }, [selectedWorkspace?.id, patchProject]);
+
+    // Navigate to Settings > Providers page
+    const handleGoToSettings = useCallback(() => {
+        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SETTINGS, {
+            detail: { section: 'providers' },
+        }));
+    }, []);
 
     // Handle send from BrandSection
     const handleBrandSend = useCallback(async (text: string, images?: ImageAttachment[]) => {
@@ -427,7 +439,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 {/* Left: Brand Section */}
                 <section className="launcher-brand relative flex items-center justify-center overflow-hidden">
                     <BrandSection
-                        projects={projects}
+                        projects={visibleProjects}
                         selectedProject={selectedWorkspace}
                         defaultWorkspacePath={config.defaultWorkspacePath}
                         onSelectWorkspace={setSelectedWorkspace}
@@ -448,6 +460,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                         mcpServers={launcherMcpServers}
                         onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
                         onRefreshProviders={refreshProviderData}
+                        onGoToSettings={handleGoToSettings}
                     />
                 </section>
 
@@ -456,7 +469,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     {/* Recent Tasks */}
                     <div className="flex-shrink-0 px-6 pt-6">
                         <RecentTasks
-                            projects={projects}
+                            projects={visibleProjects}
                             onOpenTask={handleOpenTask}
                             onOpenOverlay={handleOpenOverlay}
                             onOpenCronDetail={handleOpenCronDetail}
@@ -479,7 +492,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                                     Logs
                                 </button>
                             )}
-                            {projects.length > 0 && (
+                            {visibleProjects.length > 0 && (
                                 <button
                                     onClick={handleAddProject}
                                     className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-contrast)] hover:text-[var(--ink)]"
@@ -498,7 +511,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                                 <Loader2 className="h-5 w-5 animate-spin text-[var(--ink-muted)]/50" />
                                 <p className="mt-4 text-[13px] text-[var(--ink-muted)]/70">加载中...</p>
                             </div>
-                        ) : projects.length === 0 ? (
+                        ) : visibleProjects.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-16 text-center">
                                 <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--paper-inset)]">
                                     <FolderOpen className="h-6 w-6 text-[var(--ink-muted)]/50" />
@@ -519,7 +532,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                             </div>
                         ) : (
                             <div className="grid grid-cols-2 gap-3">
-                                {projects.map((project) => (
+                                {visibleProjects.map((project) => (
                                     <WorkspaceCard
                                         key={project.id}
                                         project={project}
@@ -537,7 +550,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
             {/* Task Center Overlay */}
             {showOverlay && (
                 <TaskCenterOverlay
-                    projects={projects}
+                    projects={visibleProjects}
                     onOpenTask={handleOverlayOpenTask}
                     onOpenCronDetail={handleOpenCronDetail}
                     onClose={handleCloseOverlay}

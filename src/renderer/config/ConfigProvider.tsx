@@ -15,6 +15,7 @@ import {
     loadAppConfig,
     atomicModifyConfig,
     ensureBundledWorkspace,
+    ensureSelfAwarenessClaudeMd,
     mergePresetCustomModels,
 } from './services/appConfigService';
 import {
@@ -113,6 +114,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
 
         try {
             await ensureBundledWorkspace();
+            await ensureSelfAwarenessClaudeMd();
 
             const [loadedConfig, loadedProjects, loadedProviders, loadedApiKeys, loadedVerifyStatus] = await Promise.all([
                 loadAppConfig(),

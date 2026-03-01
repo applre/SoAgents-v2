@@ -8,6 +8,7 @@
  */
 
 import type { LogEntry, LogLevel } from '@/types/log';
+import { localTimestamp } from '../../shared/logTime';
 
 // Store original console methods
 const originalConsole = {
@@ -134,7 +135,7 @@ function createAndDispatch(level: LogLevel, args: unknown[]): void {
     source: 'react',
     level,
     message,
-    timestamp: new Date().toISOString(),
+    timestamp: localTimestamp(),
   };
 
   // Dispatch custom event for TabProvider to listen (for UI display)

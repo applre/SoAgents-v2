@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { localTimestamp } from '../shared/logTime';
 
 type SseClient = {
   id: string;
@@ -172,7 +173,7 @@ export function createSseClient(onClose: (client: SseClient) => void): {
   // Send cached log history to newly connected client (Ring Buffer for early logs)
   // Only replay logs from BEFORE this client connected — logs after connectTime
   // are already delivered by live broadcast (client was added to `clients` above).
-  const connectTime = new Date().toISOString();
+  const connectTime = localTimestamp();
   try {
     import('./logger').then(({ getLogHistory }) => {
       const history = getLogHistory();

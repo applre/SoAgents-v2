@@ -942,7 +942,10 @@ async function main() {
       const url = new URL(request.url);
       const pathname = url.pathname;
 
-      console.log(`[http] ${request.method} ${pathname}`);
+      // Skip logging high-frequency polling paths
+      if (pathname !== '/api/unified-log' && pathname !== '/agent/dir' && pathname !== '/sessions') {
+        console.debug(`[http] ${request.method} ${pathname}`);
+      }
 
       // Handle CORS preflight requests (for browser dev mode via Vite proxy)
       if (request.method === 'OPTIONS') {
@@ -1551,13 +1554,10 @@ async function main() {
       // GET /sessions - List all sessions or filter by agentDir
       if (pathname === '/sessions' && request.method === 'GET') {
         try {
-          console.log('[sessions] GET /sessions called');
           const agentDirParam = url.searchParams.get('agentDir');
-          console.log('[sessions] agentDirParam:', agentDirParam);
           const sessions = agentDirParam
             ? getSessionsByAgentDir(agentDirParam)
             : getAllSessionMetadata();
-          console.log('[sessions] found sessions:', sessions.length);
           return jsonResponse({ success: true, sessions });
         } catch (error) {
           console.error('[sessions] Error in GET /sessions:', error);

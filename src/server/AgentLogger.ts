@@ -13,6 +13,7 @@ import { createWriteStream, type WriteStream } from 'fs';
 import { join } from 'path';
 
 import { LOGS_DIR, LOG_RETENTION_DAYS, ensureLogsDir } from './logUtils';
+import { localDate } from '../shared/logTime';
 
 // In-memory log buffer for UI display
 const logLines: string[] = [];
@@ -28,8 +29,7 @@ let currentLogFilePath: string | null = null;
  * Format: {YYYY-MM-DD}-{sessionId}.log
  */
 function getLogFilePath(sessionId: string): string {
-  const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-  return join(LOGS_DIR, `${date}-${sessionId}.log`);
+  return join(LOGS_DIR, `${localDate()}-${sessionId}.log`);
 }
 
 /**

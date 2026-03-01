@@ -364,7 +364,12 @@ export class SseConnection {
             RECONNECT_MAX_DELAY_MS
         );
 
-        console.debug(`[SSE ${this.connectionId}] Scheduling reconnect attempt ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS} in ${delay}ms`);
+        // Throttle reconnect logs: first attempt + every 10th
+        if (this.reconnectAttempts === 1) {
+            console.warn(`[SSE ${this.connectionId}] Connection failed, retrying...`);
+        } else if (this.reconnectAttempts % 10 === 0) {
+            console.debug(`[SSE ${this.connectionId}] Still reconnecting (attempt ${this.reconnectAttempts})`);
+        }
         this.notifyStatus('reconnecting');
 
         // Clear any existing timer
@@ -373,10 +378,7 @@ export class SseConnection {
         }
 
         this.reconnectTimer = setTimeout(async () => {
-            if (!this.shouldReconnect) {
-                console.debug(`[SSE ${this.connectionId}] Reconnect cancelled (shouldReconnect=false)`);
-                return;
-            }
+            if (!this.shouldReconnect) return;
 
             try {
                 // Close existing connection first
@@ -385,10 +387,12 @@ export class SseConnection {
                     this.eventSource = null;
                 }
 
-                console.debug(`[SSE ${this.connectionId}] Attempting reconnection...`);
+                const attempts = this.reconnectAttempts;
                 await this.connect();
+                if (attempts > 0) {
+                    console.log(`[SSE ${this.connectionId}] Reconnected after ${attempts} attempts`);
+                }
             } catch (error) {
-                console.error(`[SSE ${this.connectionId}] Reconnection failed:`, error);
                 // Schedule another attempt
                 if (this.shouldReconnect) {
                     this.scheduleReconnect();
@@ -417,7 +421,12 @@ export class SseConnection {
             RECONNECT_MAX_DELAY_MS
         );
 
-        console.debug(`[SSE ${this.connectionId}] Scheduling Tauri reconnect ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS} in ${delay}ms`);
+        // Throttle reconnect logs: first attempt + every 10th
+        if (this.reconnectAttempts === 1) {
+            console.warn(`[SSE ${this.connectionId}] Connection failed, retrying...`);
+        } else if (this.reconnectAttempts % 10 === 0) {
+            console.debug(`[SSE ${this.connectionId}] Still reconnecting (attempt ${this.reconnectAttempts})`);
+        }
         this.notifyStatus('reconnecting');
 
         if (this.reconnectTimer) {
@@ -439,10 +448,12 @@ export class SseConnection {
                 }
                 this.tauriUnlisteners = [];
 
-                console.debug(`[SSE ${this.connectionId}] Attempting Tauri reconnection...`);
+                const attempts = this.reconnectAttempts;
                 await this.connectTauri();
+                if (attempts > 0) {
+                    console.log(`[SSE ${this.connectionId}] Reconnected after ${attempts} attempts`);
+                }
             } catch (error) {
-                console.error(`[SSE ${this.connectionId}] Tauri reconnection failed:`, error);
                 if (this.shouldReconnect) {
                     this.scheduleTauriReconnect();
                 }

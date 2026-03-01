@@ -75,7 +75,7 @@ export function useTrayEvents(options: TrayEventsOptions) {
 
         // Listen for window focus changes (including when window is shown from tray)
         unlistenFocusChanged = await window.onFocusChanged(({ payload: focused }) => {
-          console.log('[useTrayEvents] Window focus changed:', focused);
+          console.debug('[useTrayEvents] Window focus changed:', focused);
           if (focused) {
             // Window is now visible and focused
             setWindowVisible(true);

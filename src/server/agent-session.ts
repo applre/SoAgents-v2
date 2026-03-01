@@ -18,6 +18,7 @@ import { saveSessionMetadata, updateSessionTitleFromMessage, saveSessionMessages
 import { createSessionMetadata, type SessionMessage, type MessageAttachment, type MessageUsage } from './types/session';
 import { broadcast } from './sse';
 import { initLogger, appendLog, getLogLines as getLogLinesFromLogger } from './AgentLogger';
+import { localTimestamp } from '../shared/logTime';
 
 // Module-level debug mode check (avoids repeated environment variable access)
 const isDebugMode = process.env.DEBUG === '1' || process.env.NODE_ENV === 'development';
@@ -3867,10 +3868,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     for await (const sdkMessage of querySession) {
       messageCount++;
-      console.log(`[agent][sdk] message #${messageCount} type=${sdkMessage.type}`);
+      console.debug(`[agent][sdk] message #${messageCount} type=${sdkMessage.type}`);
       try {
-        const line = `${new Date().toISOString()} ${JSON.stringify(sdkMessage)}`;
-        console.log('[agent][sdk]', JSON.stringify(sdkMessage));
+        const line = `${localTimestamp()} ${JSON.stringify(sdkMessage)}`;
         appendLogLine(line);
       } catch (error) {
         console.log('[agent][sdk] (unserializable)', error);

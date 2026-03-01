@@ -1448,7 +1448,7 @@ pub fn start_tab_sidecar<R: Runtime>(
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                ulog_info!("[bun-out][{}] {}", tab_id_clone, line);
+                log::info!("[bun-out][{}] {}", tab_id_clone, line);
             }
         });
     }
@@ -1886,7 +1886,7 @@ fn create_new_session_sidecar<R: Runtime>(
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                ulog_info!("[bun-out][session:{}] {}", session_id_for_log, line);
+                log::info!("[bun-out][session:{}] {}", session_id_for_log, line);
             }
         });
     }

@@ -110,7 +110,7 @@ pub fn create_log_entry(level: LogLevel, message: String) -> LogEntry {
         source: "rust",
         level,
         message,
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
     }
 }
 

@@ -13,29 +13,17 @@ import { join } from 'path';
 
 import type { LogEntry } from '../renderer/types/log';
 import { LOGS_DIR, LOG_RETENTION_DAYS, ensureLogsDir } from './logUtils';
+import { localDate } from '../shared/logTime';
 
 // Track current date for file rotation
 let currentDate: string | null = null;
 let currentFilePath: string | null = null;
 
 /**
- * Get today's date string (YYYY-MM-DD) in local timezone.
- * Must use local date (not UTC) to match Rust logger which also uses local date,
- * so all three log sources (React/Bun/Rust) write to the same daily file.
- */
-function getTodayDate(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-/**
  * Get log file path for today
  */
 function getLogFilePath(): string {
-  const today = getTodayDate();
+  const today = localDate();
 
   // Check if we need to rotate to a new day's file
   if (currentDate !== today) {

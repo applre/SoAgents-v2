@@ -335,8 +335,9 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use crate::logger;
     
-    logger::info(&app, format!("[proxy] {} {} - Starting", request.method, request.url));
-    
+    let is_unified_log = request.url.contains("/api/unified-log");
+    let start = std::time::Instant::now();
+
     // Build client with configurable timeout
     // Enable tcp_nodelay to disable Nagle's algorithm for faster response times
     // Force HTTP/1.1 for compatibility with Bun server (HTTP/2 may cause connection issues on Windows)
@@ -375,12 +376,9 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
 
     // Add body for POST/PUT
     if let Some(ref body) = request.body {
-        logger::debug(&app, format!("[proxy] Request body length: {} bytes", body.len()));
         req_builder = req_builder.header("Content-Type", "application/json");
         req_builder = req_builder.body(body.clone());
     }
-
-    logger::info(&app, format!("[proxy] {} {} - Sending request...", request.method, request.url));
     
     // Send request with detailed error logging
     let response = req_builder.send().await.map_err(|e| {
@@ -423,9 +421,9 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
     let content_type = resp_headers.get("content-type")
         .map(|s| s.as_str())
         .unwrap_or("");
-    
+
     let is_binary = is_binary_content_type(content_type);
-    
+
     // Get response body - encode as base64 if binary
     let (body, is_base64) = if is_binary {
         let bytes = response.bytes().await.map_err(|e| {
@@ -433,7 +431,6 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
             logger::error(&app, &err);
             e.to_string()
         })?;
-        logger::debug(&app, format!("[proxy] Binary response: {} bytes", bytes.len()));
         (BASE64.encode(&bytes), true)
     } else {
         let text = response.text().await.map_err(|e| {
@@ -441,13 +438,21 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
             logger::error(&app, &err);
             e.to_string()
         })?;
-        logger::debug(&app, format!("[proxy] Text response: {} bytes", text.len()));
         (text, false)
     };
-    
-    logger::info(&app, format!("[proxy] {} {} - Complete (status: {}, body: {} bytes)", 
-        request.method, request.url, status, body.len()));
-    
+
+    // Log: single line for success, skip unified-log endpoint entirely
+    if !is_unified_log {
+        let elapsed = start.elapsed().as_millis();
+        if status >= 200 && status < 300 {
+            logger::debug(&app, format!("[proxy] {} {} -> {} ({}B, {}ms)",
+                request.method, request.url, status, body.len(), elapsed));
+        } else {
+            logger::warn(&app, format!("[proxy] {} {} -> {} ({}B, {}ms)",
+                request.method, request.url, status, body.len(), elapsed));
+        }
+    }
+
     Ok(HttpResponse {
         status,
         body,

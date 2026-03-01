@@ -14,6 +14,7 @@ import type { createSseClient } from './sse';
 import { SSE_INSTANCE_ID } from './sse';
 import { appendUnifiedLog } from './UnifiedLogger';
 import type { LogEntry, LogLevel } from '../renderer/types/log';
+import { localTimestamp } from '../shared/logTime';
 
 // Re-export types for backward compatibility
 export type { LogEntry, LogLevel };
@@ -71,7 +72,7 @@ function createAndBroadcast(level: LogLevel, args: unknown[]): void {
         source: 'bun',
         level,
         message,
-        timestamp: new Date().toISOString(),
+        timestamp: localTimestamp(),
     };
 
     // Store in history buffer (Ring Buffer)
@@ -156,7 +157,7 @@ export function sendLog(level: LogLevel, message: string, meta?: Record<string, 
         source: 'bun',
         level,
         message,
-        timestamp: new Date().toISOString(),
+        timestamp: localTimestamp(),
         meta,
     };
 

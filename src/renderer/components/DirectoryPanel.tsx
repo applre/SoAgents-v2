@@ -194,12 +194,19 @@ const DirectoryPanel = memo(forwardRef<DirectoryPanelHandle, DirectoryPanelProps
 
   const folderName = getFolderName(agentDir);
 
+  // Track previous item count to only log when changed
+  const prevItemCountRef = useRef(-1);
+
   const refresh = useCallback(() => {
     setError(null);
     apiGet<DirectoryTree>('/agent/dir')
       .then((data) => {
+        const newCount = data.tree?.children?.length || 0;
+        if (newCount !== prevItemCountRef.current) {
+          console.log(`[DirectoryPanel] Directory tree refreshed: ${newCount} items`);
+          prevItemCountRef.current = newCount;
+        }
         setDirectoryInfo(data);
-        console.log(`[DirectoryPanel] Directory tree refreshed: ${data.tree?.children?.length || 0} items`);
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to load directory info');

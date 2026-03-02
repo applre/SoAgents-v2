@@ -35,8 +35,8 @@ type DetailView =
     | { type: 'command'; name: string; scope: 'user' | 'project' }
     | { type: 'agent'; name: string; scope: 'user' | 'project'; isNewAgent?: boolean };
 
-const TAB_ITEMS: { key: Tab; label: string; tooltip?: string }[] = [
-    { key: 'system-prompts', label: '系统提示词', tooltip: '以下所有文件内容将始终注入到 AI 的系统提示词中' },
+const TAB_ITEMS: { key: Tab; label: string }[] = [
+    { key: 'system-prompts', label: '系统提示词' },
     { key: 'skills', label: '技能 Skills' },
 ];
 
@@ -212,7 +212,6 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                                             ? 'text-[var(--accent-warm)]'
                                             : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                     } ${item.key !== TAB_ITEMS[0].key ? 'ml-4' : ''}`}
-                                    title={item.tooltip}
                                 >
                                     {item.label}
                                     {activeTab === item.key && (

@@ -97,6 +97,11 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
         // Double-submit guard for inline inputs (Enter + blur race)
         const submittingRef = useRef(false);
 
+        // Custom tooltip for [+] button
+        const [showAddTip, setShowAddTip] = useState(false);
+        const addTipTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+        const addBtnRef = useRef<HTMLButtonElement>(null);
+
         // Expose isEditing to parent
         useImperativeHandle(ref, () => ({
             isEditing: () => isEditing
@@ -441,20 +446,37 @@ const SystemPromptsPanel = forwardRef<SystemPromptsPanelRef, SystemPromptsPanelP
                             <span className="text-xs text-[var(--ink-muted)]">.md</span>
                         </div>
                     ) : (
-                        <button
-                            type="button"
-                            onClick={() => {
-                                if (isEditing) {
-                                    toastRef.current.warning('请先保存或取消编辑');
-                                    return;
-                                }
-                                setIsCreating(true);
-                            }}
-                            className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
-                            title="新建规则文件"
-                        >
-                            <Plus className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="relative shrink-0">
+                            <button
+                                ref={addBtnRef}
+                                type="button"
+                                onClick={() => {
+                                    if (isEditing) {
+                                        toastRef.current.warning('请先保存或取消编辑');
+                                        return;
+                                    }
+                                    setIsCreating(true);
+                                    setShowAddTip(false);
+                                }}
+                                onMouseEnter={() => {
+                                    addTipTimer.current = setTimeout(() => setShowAddTip(true), 400);
+                                }}
+                                onMouseLeave={() => {
+                                    if (addTipTimer.current) clearTimeout(addTipTimer.current);
+                                    setShowAddTip(false);
+                                }}
+                                className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
+                            >
+                                <Plus className="h-3.5 w-3.5" />
+                            </button>
+                            {showAddTip && (
+                                <div className="absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 shadow-lg">
+                                    <p className="text-[11px] leading-relaxed text-[var(--ink-muted)]">
+                                        添加的规则文件均会自动加载到系统提示词 System Prompt 里面
+                                    </p>
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
 

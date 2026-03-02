@@ -374,6 +374,8 @@ export type ProviderEnv = {
   apiKey?: string;
   authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
   apiProtocol?: 'anthropic' | 'openai';
+  maxOutputTokens?: number;
+  upstreamFormat?: 'chat_completions' | 'responses';
 };
 let currentProviderEnv: ProviderEnv | undefined = undefined;
 
@@ -385,6 +387,10 @@ export type OpenAiBridgeConfig = {
   apiKey: string;
   /** Target model name — bridge overrides ALL request models to this */
   model?: string;
+  /** Max output tokens cap for upstream provider */
+  maxOutputTokens?: number;
+  /** Upstream API format: 'chat_completions' (default) or 'responses' */
+  upstreamFormat?: 'chat_completions' | 'responses';
 } | null;
 
 let currentOpenAiBridgeConfig: OpenAiBridgeConfig = null;
@@ -1847,6 +1853,8 @@ export function buildClaudeSessionEnv(providerEnv?: ProviderEnv): NodeJS.Process
     currentOpenAiBridgeConfig = {
       baseUrl: effectiveProviderEnv.baseUrl ?? '',
       apiKey: effectiveProviderEnv.apiKey ?? '',
+      maxOutputTokens: effectiveProviderEnv.maxOutputTokens,
+      upstreamFormat: effectiveProviderEnv.upstreamFormat,
     };
     console.log(`[env] OpenAI bridge: ANTHROPIC_BASE_URL → loopback :${sidecarPort}, upstream → ${effectiveProviderEnv.baseUrl}, proxy vars stripped`);
     return env;

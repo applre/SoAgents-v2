@@ -178,6 +178,8 @@ type SendMessagePayload = {
     apiKey?: string;
     authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
     apiProtocol?: 'anthropic' | 'openai';
+    maxOutputTokens?: number;
+    upstreamFormat?: 'chat_completions' | 'responses';
   };
 };
 
@@ -196,6 +198,8 @@ type CronExecutePayload = {
     apiKey?: string;
     authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
     apiProtocol?: 'anthropic' | 'openai';
+    maxOutputTokens?: number;
+    upstreamFormat?: 'chat_completions' | 'responses';
   };
   /** Run mode: "single_session" (keep context) or "new_session" (fresh each time) */
   runMode?: 'single_session' | 'new_session';
@@ -1028,9 +1032,14 @@ async function main() {
     getUpstreamConfig: () => {
       const config = getOpenAiBridgeConfig();
       if (!config) throw new Error('Bridge not active');
-      return { baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model };
+      return {
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        model: config.model,
+        maxOutputTokens: config.maxOutputTokens,
+        upstreamFormat: config.upstreamFormat,
+      };
     },
-    maxOutputTokens: 8192,
     logger: (msg) => console.log(msg),
   });
 

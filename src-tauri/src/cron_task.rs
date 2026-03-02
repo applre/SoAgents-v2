@@ -1551,6 +1551,8 @@ async fn execute_task_directly(
             base_url: env.base_url.clone(),
             api_key: env.api_key.clone(),
             api_protocol: env.api_protocol.clone(),
+            max_output_tokens: env.max_output_tokens,
+            upstream_format: env.upstream_format.clone(),
         }),
         run_mode: Some(run_mode_str.to_string()),
         interval_minutes: Some(task.interval_minutes),

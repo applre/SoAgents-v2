@@ -274,6 +274,9 @@ export interface AppConfig {
   // Multi-bot configuration (v0.1.19+)
   imBotConfigs?: import('../../shared/types/im').ImBotConfig[];
 
+  // ===== Dismiss Flags =====
+  dismissClaudeEnvWarning?: boolean; // 不再提示 ~/.claude/settings.json env 覆盖警告
+
   // ===== Global Provider Cache (v0.1.26) =====
   /** Pre-built available providers JSON for IM Bot /provider and /model commands.
    *  Written by rebuildAndPersistAvailableProviders() whenever provider config changes.

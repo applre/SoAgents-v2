@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.34] - 2026-03-04
+
+### Added
+- **Edge TTS 语音合成**：新增免费 TTS MCP 工具，基于自研 WebSocket 协议实现（绕过 Bun ws polyfill 限制），支持 400+ 语音、语速/音量/音调调节、多种输出格式
+- **Gemini Image 工具前端组件**：AI 生成图片支持内联预览展示
+- **AI 消息操作栏**：新增复制/重试按钮，用户消息操作栏布局重构
+- **Google Gemini 预设供应商**：添加 Gemini（OpenAI 协议兼容）预设配置
+- **Playwright MCP 设置面板升级**：结构化控件替代通用对话框
+- **Chat 工具弹窗设置入口**：增加设置图标，点击跳转 Settings MCP 配置面板
+- **MCP 预设工具「免费」标签**：帮助用户识别无需 API Key 的免费工具
+- **Telegram Draft 流式打字机**：sendMessageDraft 实验性流式打字效果
+
+### Fixed
+- **Bridge 429 无限重试**：区分 quota-exhausted（永久限速）与临时 429，避免无限循环
+- **Session 死亡自动恢复**：防止 generator 死亡导致消息队列卡死
+- **MCP Streamable HTTP 验证**：Accept 头不符合规范导致智谱等端点 400 错误
+- **Feishu IM 稳定性**：撤回通知处理 + 排队消息响应丢失 + cross-turn 防护
+- **IM Bot MCP 工具**：取消勾选失败 + Telegram Draft 默认开启
+- **消息操作栏样式**：hover 时间戳残留 + 图标对齐 + 间距优化
+- **非流式供应商误报错**：正常响应被误显示为 Agent error 横幅
+
+### Changed
+- **Builtin MCP 注册模式重构**：统一 registry pattern + config fingerprint 变更检测
+- **CSP 安全策略更新**：添加 media-src 指令支持音频 Blob URL 播放
+
+---
+
 ## [0.1.33] - 2026-03-03
 
 ### Added

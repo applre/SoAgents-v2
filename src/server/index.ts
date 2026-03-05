@@ -137,6 +137,7 @@ import { cleanupOldUnifiedLogs, appendUnifiedLogBatch } from './UnifiedLogger';
 import { broadcast, createSseClient, getClients } from './sse';
 import { checkAnthropicSubscription, getGitBranch, verifyProviderViaSdk, verifySubscription } from './provider-verify';
 import { createBridgeHandler } from './openai-bridge';
+import { generateTitle } from './title-generator';
 
 type ImagePayload = {
   name: string;
@@ -762,6 +763,76 @@ function resolveAgentPath(root: string, relativePath: string): string | null {
     return null;
   }
   return resolved;
+}
+
+/** Read-only safety check: block system/sensitive directories, allow user-accessible paths */
+function isSafeReadPath(resolved: string): boolean {
+  const homeDir = getHomeDirOrNull() || '';
+  const isWin = process.platform === 'win32';
+
+  // Windows paths are case-insensitive; normalize for comparison
+  const norm = isWin ? (p: string) => p.toLowerCase() : (p: string) => p;
+  const resolvedN = norm(resolved);
+  const sepN = norm(sep);
+
+  const forbidden: string[] = isWin
+    ? [
+        'C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)',
+        'C:\\ProgramData', 'C:\\Recovery', 'C:\\$Recycle.Bin',
+      ]
+    : [
+        '/etc', '/var', '/usr', '/bin', '/sbin',
+        '/boot', '/root', '/sys', '/proc', '/dev',
+      ];
+
+  if (homeDir) {
+    if (isWin) {
+      forbidden.push(join(homeDir, 'AppData', 'Local', 'Microsoft'));
+    }
+    // Credential / key stores
+    forbidden.push(
+      join(homeDir, '.ssh'),
+      join(homeDir, '.gnupg'),
+      join(homeDir, '.aws'),
+      join(homeDir, '.kube'),
+      join(homeDir, '.docker'),
+      join(homeDir, '.config', 'op'),
+    );
+    if (!isWin) {
+      // macOS sensitive Library subdirectories
+      forbidden.push(
+        join(homeDir, 'Library', 'Keychains'),
+        join(homeDir, 'Library', 'Cookies'),
+        join(homeDir, 'Library', 'Mail'),
+        join(homeDir, 'Library', 'Messages'),
+        join(homeDir, 'Library', 'Safari'),
+      );
+    }
+  }
+
+  for (const f of forbidden) {
+    const fN = norm(f);
+    if (resolvedN === fN || resolvedN.startsWith(fN + sepN)) return false;
+  }
+
+  if (!isWin) {
+    const allowed = [homeDir, '/tmp', '/Users', '/home'].filter(Boolean);
+    return allowed.some(p => resolvedN === p || resolvedN.startsWith(p + sep));
+  }
+
+  // Windows: allow any drive letter path (system dirs already excluded above)
+  return /^[A-Z]:\\/i.test(resolved);
+}
+
+/** Resolve path for read-only operations: supports both absolute and relative paths */
+function resolveReadPath(root: string, inputPath: string): string | null {
+  const trimmed = inputPath.trim();
+  const isAbsolute = trimmed.startsWith('/') || /^[A-Z]:\\/i.test(trimmed);
+  if (isAbsolute) {
+    const resolved = resolve(trimmed);
+    return isSafeReadPath(resolved) ? resolved : null;
+  }
+  return resolveAgentPath(root, trimmed);
 }
 
 
@@ -2024,17 +2095,18 @@ async function main() {
           return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
         }
 
-        let payload: { title?: string };
+        let payload: { title?: string; titleSource?: 'default' | 'auto' | 'user' };
         try {
-          payload = (await request.json()) as { title?: string };
+          payload = (await request.json()) as { title?: string; titleSource?: 'default' | 'auto' | 'user' };
         } catch {
           return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
         }
 
-        const updated = updateSessionMetadata(sessionId, {
-          title: payload.title,
-          lastActiveAt: new Date().toISOString(),
-        });
+        const updates: Record<string, unknown> = { lastActiveAt: new Date().toISOString() };
+        if (payload.title !== undefined) updates.title = String(payload.title).slice(0, 100);
+        if (payload.titleSource !== undefined) updates.titleSource = payload.titleSource;
+
+        const updated = updateSessionMetadata(sessionId, updates as Parameters<typeof updateSessionMetadata>[1]);
 
         if (!updated) {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
@@ -2063,6 +2135,53 @@ async function main() {
 
         console.log(`[sessions] Switched to session: ${payload.sessionId}`);
         return jsonResponse({ success: true, sessionId: payload.sessionId });
+      }
+
+      // POST /api/generate-session-title - AI-generate a short session title
+      if (pathname === '/api/generate-session-title' && request.method === 'POST') {
+        let payload: { sessionId: string; userMessage: string; assistantReply: string; model: string; providerEnv?: ProviderEnv };
+        try {
+          payload = (await request.json()) as typeof payload;
+        } catch {
+          return jsonResponse({ success: false, error: 'Invalid JSON payload.' }, 400);
+        }
+
+        if (!payload.sessionId || !payload.userMessage) {
+          return jsonResponse({ success: false, error: 'sessionId and userMessage are required.' }, 400);
+        }
+
+        // Server-side input length caps to prevent abuse
+        payload.userMessage = payload.userMessage.slice(0, 1000);
+        payload.assistantReply = (payload.assistantReply || '').slice(0, 1000);
+        payload.model = (payload.model || '').slice(0, 200);
+
+        // Skip if session not found or user has manually renamed
+        const meta = getSessionMetadata(payload.sessionId);
+        if (!meta) {
+          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+        }
+        if (meta.titleSource === 'user') {
+          return jsonResponse({ success: false, skipped: true });
+        }
+
+        const title = await generateTitle(
+          payload.userMessage,
+          payload.assistantReply || '',
+          payload.model || '',
+          payload.providerEnv,
+        );
+
+        if (title) {
+          // Re-check titleSource before writing to prevent TOCTOU race with user rename
+          const currentMeta = getSessionMetadata(payload.sessionId);
+          if (currentMeta?.titleSource === 'user') {
+            return jsonResponse({ success: false, skipped: true });
+          }
+          updateSessionMetadata(payload.sessionId, { title, titleSource: 'auto' } as Parameters<typeof updateSessionMetadata>[1]);
+          return jsonResponse({ success: true, title });
+        }
+
+        return jsonResponse({ success: false });
       }
 
       // ============= END SESSION API =============
@@ -2207,7 +2326,7 @@ async function main() {
               results[p] = { exists: false, type: 'file' };
               continue;
             }
-            const resolved = resolveAgentPath(currentAgentDir, p);
+            const resolved = resolveReadPath(currentAgentDir, p);
             if (!resolved) {
               results[p] = { exists: false, type: 'file' };
               continue;
@@ -2239,7 +2358,7 @@ async function main() {
           return jsonResponse({ error: 'Invalid agentDir.' }, 400);
         }
         const targetDir = queryAgentDir || currentAgentDir;
-        const resolvedPath = resolveAgentPath(targetDir, relativePath);
+        const resolvedPath = resolveReadPath(targetDir, relativePath);
         if (!resolvedPath) {
           return jsonResponse({ error: 'Invalid path.' }, 400);
         }
@@ -2264,7 +2383,7 @@ async function main() {
         if (!relativePath) {
           return jsonResponse({ error: 'Missing path.' }, 400);
         }
-        const resolvedPath = resolveAgentPath(currentAgentDir, relativePath);
+        const resolvedPath = resolveReadPath(currentAgentDir, relativePath);
         if (!resolvedPath) {
           return jsonResponse({ error: 'Invalid path.' }, 400);
         }
@@ -2520,7 +2639,7 @@ async function main() {
 
           // Use provided agentDir or fall back to currentAgentDir
           const effectiveAgentDir = payload?.agentDir || currentAgentDir;
-          const resolved = resolveAgentPath(effectiveAgentDir, targetPath);
+          const resolved = resolveReadPath(effectiveAgentDir, targetPath);
           if (!resolved) {
             return jsonResponse({ success: false, error: 'Invalid path.' }, 400);
           }
@@ -2562,7 +2681,7 @@ async function main() {
           }
 
           const effectiveAgentDir = payload?.agentDir || currentAgentDir;
-          const resolved = resolveAgentPath(effectiveAgentDir, targetPath);
+          const resolved = resolveReadPath(effectiveAgentDir, targetPath);
           if (!resolved) {
             return jsonResponse({ success: false, error: 'Invalid path.' }, 400);
           }

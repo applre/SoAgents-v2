@@ -11,6 +11,7 @@ import { useToast } from '@/components/Toast';
 import { useUpdater } from '@/hooks/useUpdater';
 import { useTrayEvents } from '@/hooks/useTrayEvents';
 import { useConfig } from '@/hooks/useConfig';
+import { useTabSwipeGesture } from '@/hooks/useTabSwipeGesture';
 import Chat from '@/pages/Chat';
 import Launcher from '@/pages/Launcher';
 import Settings from '@/pages/Settings';
@@ -24,6 +25,7 @@ import { getAllCronTasks, getTabCronTask, updateCronTaskTab } from '@/api/cronTa
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson, apiPostJson } from '@/api/apiFetch';
+import { updateSession } from '@/api/sessionClient';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
 import { ensureSelfAwarenessWorkspace } from '@/config/configService';
@@ -64,6 +66,8 @@ interface TabContentProps {
   onSwitchSession: (tabId: string, sessionId: string) => Promise<void>;
   onNewSession: (tabId: string) => Promise<boolean>;
   onUpdateGenerating: (tabId: string, isGenerating: boolean) => void;
+  onUpdateTitle: (tabId: string, title: string) => void;
+  onRenameSession: (tabId: string, newTitle: string) => void;
   onUpdateSessionId: (tabId: string, newSessionId: string) => Promise<void>;
   onClearInitialMessage: (tabId: string) => void;
   onClearJoinedExistingSidecar: (tabId: string) => void;
@@ -80,7 +84,7 @@ interface TabContentProps {
 const MemoizedTabContent = memo(function TabContent({
   tab, isActive, isLoading, error,
   onLaunchProject, onBack, onSwitchSession, onNewSession,
-  onUpdateGenerating, onUpdateSessionId, onClearInitialMessage,
+  onUpdateGenerating, onUpdateTitle, onRenameSession, onUpdateSessionId, onClearInitialMessage,
   onClearJoinedExistingSidecar,
   settingsInitialSection, settingsInitialMcpId, onSettingsSectionChange,
   updateReady, updateVersion, updateChecking, updateDownloading,
@@ -118,6 +122,7 @@ const MemoizedTabContent = memo(function TabContent({
           sessionId={tab.sessionId}
           isActive={isActive}
           onGeneratingChange={(isGenerating) => onUpdateGenerating(tab.id, isGenerating)}
+          onTitleChange={(title) => onUpdateTitle(tab.id, title)}
           onSessionIdChange={(newSessionId) => onUpdateSessionId(tab.id, newSessionId)}
         >
           <Chat
@@ -128,6 +133,8 @@ const MemoizedTabContent = memo(function TabContent({
             onInitialMessageConsumed={() => onClearInitialMessage(tab.id)}
             joinedExistingSidecar={tab.joinedExistingSidecar}
             onJoinedExistingSidecarHandled={() => onClearJoinedExistingSidecar(tab.id)}
+            sessionTitle={tab.title}
+            onRenameSession={(newTitle: string) => onRenameSession(tab.id, newTitle)}
           />
         </TabProvider>
       )}
@@ -208,6 +215,9 @@ export default function App() {
     hasApiKey: boolean;
   } | null>(null);
   const [claudeEnvClearing, setClaudeEnvClearing] = useState(false);
+
+  // Content container ref for tab swipe gesture
+  const contentRef = useRef<HTMLDivElement>(null);
 
   // Per-tab launch guard — prevents concurrent launches overwriting each other's state
   const launchingTabRef = useRef<string | null>(null);
@@ -421,6 +431,11 @@ export default function App() {
     ));
   }, []);
 
+  // Update tab title (called from TabProvider when auto-title or rename occurs)
+  const updateTabTitle = useCallback((tabId: string, title: string) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, title } : t));
+  }, []);
+
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
   // - Tab.sessionId syncs with the actual session ID
@@ -574,7 +589,7 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via tabsRef
   }, []);
 
-  // Keyboard shortcuts: Cmd+T (new tab), Cmd+W (close tab)
+  // Keyboard shortcuts: Cmd+T (new tab), Cmd+W (close tab), Cmd+Shift+[/] (switch tab)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toLowerCase().includes('mac');
@@ -593,6 +608,18 @@ export default function App() {
       } else if (e.key === 'w' || e.key === 'W') {
         e.preventDefault();
         closeCurrentTab();
+      } else if (e.shiftKey && (e.code === 'BracketLeft' || e.code === 'BracketRight')) {
+        // Cmd+Shift+[ = previous tab, Cmd+Shift+] = next tab
+        e.preventDefault();
+        const tabs = tabsRef.current;
+        const activeId = activeTabIdRef.current;
+        if (tabs.length <= 1 || !activeId) return;
+        const idx = tabs.findIndex((t) => t.id === activeId);
+        if (idx === -1) return;
+        const newIdx = e.code === 'BracketLeft' ? idx - 1 : idx + 1;
+        if (newIdx >= 0 && newIdx < tabs.length) {
+          setActiveTabId(tabs[newIdx].id);
+        }
       }
     };
 
@@ -836,6 +863,17 @@ export default function App() {
       t.id === tabId ? { ...t, joinedExistingSidecar: undefined } : t
     ));
   }, []);
+
+  // Rename session: update tab title + persist to backend + notify listeners
+  const handleRenameSession = useCallback((tabId: string, newTitle: string) => {
+    updateTabTitle(tabId, newTitle);
+    const tab = tabsRef.current.find(t => t.id === tabId);
+    if (tab?.sessionId) {
+      updateSession(tab.sessionId, { title: newTitle, titleSource: 'user' })
+        .then(() => window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SESSION_TITLE_CHANGED)))
+        .catch(err => console.error('[App] Failed to persist renamed title:', err));
+    }
+  }, [updateTabTitle]);
 
   /**
    * Handle session switch from within Chat (history dropdown)
@@ -1166,6 +1204,9 @@ export default function App() {
     setActiveTabId(tabId);
   }, []);
 
+  // Trackpad two-finger horizontal swipe to switch tabs (follow-along animation)
+  useTabSwipeGesture({ contentRef, tabsRef, activeTabIdRef, onSwitchTab: handleSelectTab });
+
   const handleCloseTab = useCallback((tabId: string) => {
     // Special case: If only one launcher tab, do nothing
     const currentTabs = tabsRef.current;
@@ -1405,7 +1446,7 @@ export default function App() {
       </CustomTitleBar>
 
       {/* Tab content - only Chat views need TabProvider for sidecar communication */}
-      <div className="relative flex-1 overflow-hidden">
+      <div ref={contentRef} className="relative flex-1 overflow-hidden">
         {tabs.map((tab) => (
           <MemoizedTabContent
             key={tab.id}
@@ -1418,6 +1459,8 @@ export default function App() {
             onSwitchSession={handleSwitchSession}
             onNewSession={handleNewSession}
             onUpdateGenerating={updateTabGenerating}
+            onUpdateTitle={updateTabTitle}
+            onRenameSession={handleRenameSession}
             onUpdateSessionId={updateTabSessionId}
             onClearInitialMessage={clearInitialMessage}
             onClearJoinedExistingSidecar={clearJoinedExistingSidecar}

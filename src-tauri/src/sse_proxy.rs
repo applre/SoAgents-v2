@@ -356,6 +356,7 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
         "POST" => client.post(&request.url),
         "PUT" => client.put(&request.url),
         "DELETE" => client.delete(&request.url),
+        "PATCH" => client.patch(&request.url),
         _ => {
             let err = format!("[proxy] Unsupported method: {}", request.method);
             logger::error(&app, &err);
@@ -370,7 +371,7 @@ pub async fn proxy_http_request(app: AppHandle, request: HttpRequest) -> Result<
         }
     }
 
-    // Add body for POST/PUT
+    // Add body for POST/PUT/PATCH
     if let Some(ref body) = request.body {
         req_builder = req_builder.header("Content-Type", "application/json");
         req_builder = req_builder.body(body.clone());

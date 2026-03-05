@@ -6,7 +6,7 @@
  *
  * Only provided inside Chat; Settings / other pages get null from useFileAction().
  */
-import { AtSign, Eye, FolderOpen } from 'lucide-react';
+import { AtSign, ExternalLink, Eye, FolderOpen } from 'lucide-react';
 import {
   createContext,
   lazy,
@@ -237,6 +237,10 @@ export function FileActionProvider({ children, onInsertReference, refreshTrigger
     onInsertReferenceRef.current?.([path]);
   }, []);
 
+  const handleOpenWithDefault = useCallback((path: string) => {
+    void apiPostRef.current('/agent/open-with-default', { path });
+  }, []);
+
   const handleOpenInFinder = useCallback((path: string) => {
     void apiPostRef.current('/agent/open-in-finder', { path });
   }, []);
@@ -265,13 +269,19 @@ export function FileActionProvider({ children, onInsertReference, refreshTrigger
     });
 
     items.push({
+      label: '打开',
+      icon: <ExternalLink className="h-4 w-4" />,
+      onClick: () => handleOpenWithDefault(path),
+    });
+
+    items.push({
       label: '打开所在文件夹',
       icon: <FolderOpen className="h-4 w-4" />,
       onClick: () => handleOpenInFinder(path),
     });
 
     return items;
-  }, [menuState, handlePreview, handleReference, handleOpenInFinder]);
+  }, [menuState, handlePreview, handleReference, handleOpenWithDefault, handleOpenInFinder]);
 
   // ---------- Context value ----------
   const contextValue = useMemo<FileActionContextValue>(() => ({

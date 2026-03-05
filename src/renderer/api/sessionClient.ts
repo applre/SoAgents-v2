@@ -33,6 +33,8 @@ export interface SessionMetadata {
     source?: 'desktop' | 'telegram_private' | 'telegram_group' | 'feishu_private' | 'feishu_group';
     /** Preview of the last user message (truncated, for Task Center display) */
     lastMessagePreview?: string;
+    /** How the title was set: default (first message truncation), auto (AI-generated), user (manually renamed) */
+    titleSource?: 'default' | 'auto' | 'user';
 }
 
 export interface SessionMessage {
@@ -123,7 +125,7 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
  */
 export async function updateSession(
     sessionId: string,
-    updates: { title?: string }
+    updates: { title?: string; titleSource?: 'default' | 'auto' | 'user' }
 ): Promise<SessionMetadata | null> {
     try {
         const result = await apiFetch(`/sessions/${sessionId}`, {
@@ -149,6 +151,27 @@ export async function getSessionStats(sessionId: string): Promise<SessionDetaile
         return result.stats ?? null;
     } catch {
         return null;
+    }
+}
+
+/**
+ * Generate a short AI-powered session title from the first QA exchange.
+ * Uses Global Sidecar (apiPostJson) since title generation is tab-independent.
+ */
+export async function generateSessionTitle(
+    sessionId: string,
+    userMessage: string,
+    assistantReply: string,
+    model: string,
+    providerEnv?: { baseUrl?: string; apiKey?: string; authType?: string; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; upstreamFormat?: 'chat_completions' | 'responses' },
+): Promise<{ success: boolean; title?: string }> {
+    try {
+        return await apiPostJson<{ success: boolean; title?: string }>(
+            '/api/generate-session-title',
+            { sessionId, userMessage, assistantReply, model, providerEnv },
+        );
+    } catch {
+        return { success: false };
     }
 }
 

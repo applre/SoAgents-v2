@@ -45,17 +45,21 @@ export default memo(function SortableTabItem({
         opacity: isDragging ? 0.8 : 1,
     };
 
-    const displayTitle = tab.agentDir
-        ? getFolderName(tab.agentDir)
-        : tab.title;
+    // Prefer session title (auto/user) over folder name, fallback to folder name or tab.title
+    const hasSessionTitle = tab.title && tab.title !== 'New Tab' && tab.title !== 'New Chat';
+    const displayTitle = hasSessionTitle
+        ? tab.title
+        : (tab.agentDir ? getFolderName(tab.agentDir) : tab.title);
+    const tooltipTitle = tab.agentDir ? getFolderName(tab.agentDir) : undefined;
 
     return (
         <div
             ref={setNodeRef}
             style={style}
             data-tab-id={tab.id}
+            title={tooltipTitle}
             className={`
-                group relative flex h-8 min-w-[100px] max-w-[160px] cursor-default items-center
+                group relative flex h-8 min-w-[100px] max-w-[200px] cursor-default items-center
                 rounded-lg px-3 transition-colors duration-150 flex-shrink-0
                 ${isDragging ? 'shadow-lg ring-2 ring-[var(--accent)]/30' : ''}
                 ${isActive

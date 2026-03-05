@@ -2,7 +2,7 @@
 // Handles WebSocket long connection, message sending/editing/deleting,
 // tenant_access_token management, and event parsing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -518,6 +518,9 @@ pub struct FeishuAdapter {
     /// User name cache: open_id → (display_name, fetched_at)
     /// LRU-style: max 1000 entries, 24h TTL
     user_name_cache: Arc<Mutex<HashMap<String, (String, std::time::Instant)>>>,
+    /// Known group chat_ids for auto-discovery (same pattern as DingTalk).
+    /// Pre-populated from persisted group_permissions on startup.
+    known_groups: Arc<Mutex<HashSet<String>>>,
 }
 
 impl FeishuAdapter {
@@ -543,6 +546,14 @@ impl FeishuAdapter {
         // Load dedup cache from disk (survives app restart)
         let dedup_cache = Self::load_dedup_cache(dedup_path.as_deref());
 
+        // Pre-populate known groups from persisted group_permissions so we don't
+        // re-trigger BotAdded for already-discovered groups on restart.
+        let known_groups: HashSet<String> = config
+            .group_permissions
+            .iter()
+            .map(|gp| gp.group_id.clone())
+            .collect();
+
         Self {
             app_id: config.feishu_app_id.clone().unwrap_or_default(),
             app_secret: config.feishu_app_secret.clone().unwrap_or_default(),
@@ -559,6 +570,7 @@ impl FeishuAdapter {
             group_event_tx,
             bot_open_id: Arc::new(RwLock::new(None)),
             user_name_cache: Arc::new(Mutex::new(HashMap::new())),
+            known_groups: Arc::new(Mutex::new(known_groups)),
         }
     }
 
@@ -1863,6 +1875,14 @@ impl FeishuAdapter {
 
         // Handle group lifecycle events (bot added/removed)
         if let Some(ge) = self.parse_group_event(&event).await {
+            match &ge {
+                GroupEvent::BotAdded { chat_id, .. } => {
+                    self.known_groups.lock().await.insert(chat_id.clone());
+                }
+                GroupEvent::BotRemoved { chat_id, .. } => {
+                    self.known_groups.lock().await.remove(chat_id);
+                }
+            }
             if self.group_event_tx.send(ge).await.is_err() {
                 ulog_error!("[feishu] Group event channel closed");
             }
@@ -1919,6 +1939,41 @@ impl FeishuAdapter {
                 tokio::task::spawn_blocking(move || {
                     save_dedup_cache_to_disk(&path, &snapshot);
                 });
+            }
+
+            // Auto-discover groups from incoming group messages (same pattern as DingTalk).
+            // Feishu's im.chat.member.bot.added_v1 event requires explicit subscription and
+            // may not fire for groups where the bot was already present before app setup.
+            // This ensures groups are discovered as soon as any message arrives.
+            if msg.source_type == ImSourceType::Group {
+                let mut groups = self.known_groups.lock().await;
+                if !groups.contains(&msg.chat_id) {
+                    groups.insert(msg.chat_id.clone());
+                    drop(groups); // Release lock before async call
+
+                    let chat_title = match self.get_chat_info(&msg.chat_id).await {
+                        Ok(name) => name,
+                        Err(_) => "Unknown Group".to_string(),
+                    };
+                    ulog_info!(
+                        "[feishu] New group detected from message: {} ({})",
+                        chat_title,
+                        msg.chat_id
+                    );
+                    if self
+                        .group_event_tx
+                        .send(GroupEvent::BotAdded {
+                            chat_id: msg.chat_id.clone(),
+                            chat_title,
+                            platform: ImPlatform::Feishu,
+                            added_by_name: None,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        ulog_error!("[feishu] Group event channel closed");
+                    }
+                }
             }
 
             // Check bind code (plain text BIND_xxx in private chat)

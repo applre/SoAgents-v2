@@ -32,6 +32,8 @@ export interface SessionMetadata {
     source?: 'desktop' | 'telegram_private' | 'telegram_group' | 'feishu_private' | 'feishu_group';
     /** Preview of the last user message (truncated, for Task Center display) */
     lastMessagePreview?: string;
+    /** How the title was set: default (first message truncation), auto (AI-generated), user (manually renamed) */
+    titleSource?: 'default' | 'auto' | 'user';
 }
 
 /**

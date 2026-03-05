@@ -14,6 +14,7 @@ import { flushSync } from 'react-dom';
 import type { ReactNode } from 'react';
 
 import { track } from '@/analytics';
+import { generateSessionTitle } from '@/api/sessionClient';
 import { createSseConnection, type SseConnection } from '@/api/SseConnection';
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { PermissionRequest } from '@/components/PermissionPrompt';
@@ -95,6 +96,8 @@ interface TabProviderProps {
     onGeneratingChange?: (isGenerating: boolean) => void;
     /** Callback when sessionId changes (e.g., backend creates real session from pending-xxx) */
     onSessionIdChange?: (newSessionId: string) => void;
+    /** Callback when session title changes (auto-generated or renamed) */
+    onTitleChange?: (title: string) => void;
     // Note: sidecarPort prop removed - now using Session-centric Sidecar (Owner model)
     // Port is dynamically retrieved via getSessionPort(sessionId)
 }
@@ -197,6 +200,7 @@ export default function TabProvider({
     isActive,
     onGeneratingChange,
     onSessionIdChange,
+    onTitleChange,
 }: TabProviderProps) {
     // Core state
     // currentSessionId tracks the actual loaded session (starts from prop, updated by loadSession)
@@ -281,6 +285,15 @@ export default function TabProvider({
     onGeneratingChangeRef.current = onGeneratingChange;
     const onSessionIdChangeRef = useRef(onSessionIdChange);
     onSessionIdChangeRef.current = onSessionIdChange;
+    const onTitleChangeRef = useRef(onTitleChange);
+    onTitleChangeRef.current = onTitleChange;
+
+    // Auto-title generation refs
+    const autoTitleAttemptedRef = useRef(false);
+    const firstUserMessageRef = useRef<string | null>(null);
+    const lastCompletedTextRef = useRef('');
+    const lastProviderEnvRef = useRef<{ baseUrl?: string; apiKey?: string; authType?: string; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; upstreamFormat?: 'chat_completions' | 'responses' } | undefined>(undefined);
+    const lastModelRef = useRef<string | undefined>(undefined);
 
     // Notify parent when generating state changes (for close confirmation)
     useEffect(() => {
@@ -342,9 +355,17 @@ export default function TabProvider({
         setUnifiedLogs([]);
         setLogs([]);
         clearInteractiveState();
+        // Reset auto-title state for new conversation
+        autoTitleAttemptedRef.current = false;
+        firstUserMessageRef.current = null;
+        lastCompletedTextRef.current = '';
+        lastProviderEnvRef.current = undefined;
+        lastModelRef.current = undefined;
         // Clear current session ID - no active session until first message creates one
         // This ensures history dropdown shows no selection for new conversations
         setCurrentSessionId(null);
+        // Reset tab title so SortableTabItem falls back to folder name
+        onTitleChangeRef.current?.('New Chat');
 
         // 2. Tell backend to reset (this will also broadcast chat:init)
         try {
@@ -470,6 +491,15 @@ export default function TabProvider({
                     }),
                 };
             }
+        }
+
+        // Capture completed text for auto-title generation (skip if already attempted)
+        if (!autoTitleAttemptedRef.current && status === 'completed' && finalMsg.role === 'assistant' && Array.isArray(finalMsg.content)) {
+            const textParts = finalMsg.content
+                .filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+                .map(b => b.text)
+                .join('');
+            lastCompletedTextRef.current = textParts;
         }
 
         setHistoryMessages(prev => [...prev, finalMsg]);
@@ -887,6 +917,27 @@ export default function TabProvider({
                     tool_count: completePayload?.tool_count ?? 0,
                     duration_ms: completePayload?.duration_ms ?? 0,
                 });
+
+                // Auto-title: fire once after first successful QA exchange
+                if (!autoTitleAttemptedRef.current && currentSessionIdRef.current && firstUserMessageRef.current) {
+                    autoTitleAttemptedRef.current = true;
+                    const sid = currentSessionIdRef.current;
+                    const userText = firstUserMessageRef.current;
+                    const assistantText = lastCompletedTextRef.current.slice(0, 300);
+                    const model = completePayload?.model || lastModelRef.current || '';
+                    const pEnv = lastProviderEnvRef.current;
+                    // Fire-and-forget — guard against session switch during async call
+                    generateSessionTitle(sid, userText, assistantText, model, pEnv)
+                        .then(r => {
+                            if (r?.success && r.title && currentSessionIdRef.current === sid) {
+                                onTitleChangeRef.current?.(r.title);
+                                // Backend already persisted — notify history/task center to refetch
+                                window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.SESSION_TITLE_CHANGED));
+                            }
+                        })
+                        .catch(() => {});
+                }
+
                 break;
             }
 
@@ -1327,6 +1378,13 @@ export default function TabProvider({
         // Reset new session flag BEFORE sending - allow message replay to show user's message
         isNewSessionRef.current = false;
 
+        // Capture first user message and provider info for auto-title generation
+        if (!firstUserMessageRef.current) {
+            firstUserMessageRef.current = trimmed;
+        }
+        lastModelRef.current = model;
+        lastProviderEnvRef.current = providerEnv ? { baseUrl: providerEnv.baseUrl, apiKey: providerEnv.apiKey, authType: providerEnv.authType, apiProtocol: providerEnv.apiProtocol, maxOutputTokens: providerEnv.maxOutputTokens, upstreamFormat: providerEnv.upstreamFormat } : undefined;
+
         // Store attachments for merging with SSE replay
         if (hasImages) {
             pendingAttachmentsRef.current = images.map((img) => ({
@@ -1498,7 +1556,7 @@ export default function TabProvider({
                 }
             }
 
-            const response = await apiGetJson<{ success: boolean; session?: { messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; timestamp: string; sdkUuid?: string; attachments?: Array<{ id: string; name: string; mimeType: string; path: string; previewUrl?: string }>; metadata?: { source: 'desktop' | 'telegram_private' | 'telegram_group'; sourceId?: string; senderName?: string } }> } }>(`/sessions/${targetSessionId}`);
+            const response = await apiGetJson<{ success: boolean; session?: { title?: string; titleSource?: string; messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; timestamp: string; sdkUuid?: string; attachments?: Array<{ id: string; name: string; mimeType: string; path: string; previewUrl?: string }>; metadata?: { source: 'desktop' | 'telegram_private' | 'telegram_group'; sourceId?: string; senderName?: string } }> } }>(`/sessions/${targetSessionId}`);
 
             if (!response.success || !response.session) {
                 // Session not found is not necessarily an error - it may have been deleted
@@ -1542,6 +1600,16 @@ export default function TabProvider({
                 };
             });
 
+            // Reset auto-title state when switching sessions
+            // Skip auto-title if session already has messages OR already has an AI/user title
+            autoTitleAttemptedRef.current = loadedMessages.length > 0
+                || response.session.titleSource === 'auto'
+                || response.session.titleSource === 'user';
+            firstUserMessageRef.current = null;
+            lastCompletedTextRef.current = '';
+            lastProviderEnvRef.current = undefined;
+            lastModelRef.current = undefined;
+
             // Clear current state and load new messages
             seenIdsRef.current.clear();
             isNewSessionRef.current = false; // Allow SSE replays again
@@ -1559,6 +1627,11 @@ export default function TabProvider({
             clearInteractiveState();
             // Update current session ID to reflect the loaded session
             setCurrentSessionId(targetSessionId);
+
+            // Update tab title from session metadata (fixes title not showing after session switch)
+            if (response.session.title) {
+                onTitleChangeRef.current?.(response.session.title);
+            }
 
             // Also update backend to switch session (for continuity)
             await postJson('/sessions/switch', { sessionId: targetSessionId });

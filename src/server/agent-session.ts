@@ -2710,21 +2710,14 @@ function appendLogLine(line: string): void {
   broadcast('chat:log', line);
 }
 
-function extractAgentErrorFromContent(content: unknown): string | null {
-  const text = formatAssistantContent(content);
-  if (!text) {
-    return null;
-  }
-  if (/api error|authentication_error|unauthorized|forbidden/i.test(text)) {
-    return text;
-  }
-  return null;
-}
-
 function extractAgentError(sdkMessage: unknown): string | null {
   if (!sdkMessage || typeof sdkMessage !== 'object') {
     return null;
   }
+  // Only check the SDK-level .error field — this is set when the SDK itself encounters
+  // an error (auth failure, network error, etc.). Do NOT scan assistant message content
+  // for error-like keywords, because the AI may legitimately discuss errors in its analysis
+  // (e.g. "Feishu API error code 99991672") which would cause false-positive agent-error banners.
   const candidate = (sdkMessage as { error?: unknown }).error;
   if (candidate) {
     let errorStr: string;
@@ -2758,15 +2751,6 @@ function extractAgentError(sdkMessage: unknown): string | null {
       return `${errorStr}: ${detail}`;
     }
     return errorStr;
-  }
-
-  if (
-    'type' in sdkMessage &&
-    (sdkMessage as { type?: string }).type === 'assistant' &&
-    'message' in sdkMessage
-  ) {
-    const assistantMessage = (sdkMessage as { message?: { content?: unknown } }).message;
-    return extractAgentErrorFromContent(assistantMessage?.content);
   }
 
   return null;

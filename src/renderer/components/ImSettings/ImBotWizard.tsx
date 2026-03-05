@@ -35,6 +35,7 @@ const FEISHU_PERMISSIONS_JSON = `{
       "application:application:self_manage",
       "application:bot.menu:write",
       "cardkit:card:write",
+      "contact:contact.base:readonly",
       "contact:user.employee_id:readonly",
       "corehr:file:download",
       "docs:document.content:read",

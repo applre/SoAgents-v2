@@ -532,7 +532,7 @@ export function saveSessionMessages(sessionId: string, messages: SessionMessage[
  */
 export function updateSessionMetadata(
     sessionId: string,
-    updates: Partial<Pick<SessionMetadata, 'title' | 'lastActiveAt' | 'sdkSessionId' | 'unifiedSession' | 'stats' | 'source' | 'lastMessagePreview'>>
+    updates: Partial<Pick<SessionMetadata, 'title' | 'lastActiveAt' | 'sdkSessionId' | 'unifiedSession' | 'stats' | 'source' | 'lastMessagePreview' | 'titleSource'>>
 ): SessionMetadata | null {
     const session = getSessionMetadata(sessionId);
     if (!session) {
@@ -564,7 +564,7 @@ export function updateSessionTitleFromMessage(sessionId: string, message: string
     }
 
     const title = generateSessionTitle(message);
-    updateSessionMetadata(sessionId, { title });
+    updateSessionMetadata(sessionId, { title, titleSource: 'default' });
 }
 
 /**

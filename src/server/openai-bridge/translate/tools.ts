@@ -36,12 +36,15 @@ export function translateToolCalls(toolCalls: OpenAIToolCall[]): {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  thought_signature?: string;
 }[] {
   return toolCalls.map(tc => ({
     type: 'tool_use' as const,
     id: tc.id || generateToolUseId(),
     name: tc.function.name,
     input: safeParseJson(tc.function.arguments),
+    // Gemini thinking models require round-tripping thought_signature on tool calls
+    ...(tc.thought_signature ? { thought_signature: tc.thought_signature } : {}),
   }));
 }
 

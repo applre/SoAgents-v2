@@ -129,7 +129,11 @@ export class StreamTranslator {
       events.push({
         type: 'content_block_start',
         index: this.contentIndex,
-        content_block: { type: 'tool_use', id, name, input: {} },
+        content_block: {
+          type: 'tool_use', id, name, input: {},
+          // Gemini thinking models: pass through thought_signature (always in first chunk)
+          ...(tc.thought_signature ? { thought_signature: tc.thought_signature } : {}),
+        },
       });
     }
 

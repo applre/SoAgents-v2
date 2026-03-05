@@ -31,6 +31,50 @@ import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import type { InitialMessage } from '@/types/tab';
 // CronTaskConfig type is used via useCronTask hook
 
+/** Inline-editable session title — click to edit, Enter/Blur to save, Esc to cancel */
+function SessionTitleEditor({ title, onRename }: { title: string; onRename: (newTitle: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setDraft(title); }, [title]);
+  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    setEditing(false);
+    if (trimmed && trimmed !== title) {
+      onRename(trimmed);
+    }
+  };
+
+  return (
+    <div className="min-w-0 w-[360px]">
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="w-full rounded border border-[var(--line)] bg-[var(--paper-inset)] px-1.5 py-0.5 text-sm font-medium text-[var(--ink)] outline-none focus:border-[var(--accent)]"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') inputRef.current?.blur();
+            if (e.key === 'Escape') { setDraft(title); setEditing(false); }
+          }}
+        />
+      ) : (
+        <span
+          className="block truncate cursor-pointer px-1.5 py-0.5 text-sm font-medium text-[var(--ink-subtle)] hover:text-[var(--ink)] transition-colors"
+          onClick={() => setEditing(true)}
+          title="点击重命名"
+        >
+          {title}
+        </span>
+      )}
+    </div>
+  );
+}
+
 interface ChatProps {
   onBack?: () => void;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
@@ -45,9 +89,13 @@ interface ChatProps {
   joinedExistingSidecar?: boolean;
   /** Called after sidecar config has been adopted */
   onJoinedExistingSidecarHandled?: () => void;
+  /** Current session title (from tab state) */
+  sessionTitle?: string;
+  /** Called when user renames the session */
+  onRenameSession?: (newTitle: string) => void;
 }
 
-export default function Chat({ onBack, onNewSession, onSwitchSession, initialMessage, onInitialMessageConsumed, joinedExistingSidecar, onJoinedExistingSidecarHandled }: ChatProps) {
+export default function Chat({ onBack, onNewSession, onSwitchSession, initialMessage, onInitialMessageConsumed, joinedExistingSidecar, onJoinedExistingSidecarHandled, sessionTitle, onRenameSession }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -1243,6 +1291,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
                 {agentDir.split(/[/\\]/).filter(Boolean).pop()}
               </span>
             )}
+            {/* Session title — click to rename */}
+            {sessionTitle && sessionTitle !== 'New Tab' && sessionTitle !== 'New Chat' && (
+              <>
+                <span className="text-[var(--ink-subtle)]">/</span>
+                <SessionTitleEditor
+                  title={sessionTitle}
+                  onRename={(newTitle) => onRenameSession?.(newTitle)}
+                />
+              </>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {/* New Session button - before History */}
@@ -1252,8 +1310,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
               className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               title="新建对话"
             >
-              <Plus className="h-3.5 w-3.5" />
-              新对话
+              <Plus className="h-3.5 w-3.5 flex-shrink-0" />
+              <span className="hidden sm:inline">新对话</span>
             </button>
             {/* History button */}
             <div className="relative">
@@ -1266,8 +1324,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
                   : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                   }`}
               >
-                <History className="h-3.5 w-3.5" />
-                历史
+                <History className="h-3.5 w-3.5 flex-shrink-0" />
+                <span className="hidden sm:inline">历史</span>
               </button>
               <SessionHistoryDropdown
                 agentDir={agentDir}

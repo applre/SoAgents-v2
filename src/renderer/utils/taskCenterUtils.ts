@@ -47,9 +47,16 @@ export function isImSource(source: SessionMetadata['source']): boolean {
 }
 
 /**
- * Get truncated display text for a session (35 chars max)
+ * Get truncated display text for a session (35 chars max).
+ * AI-generated or user-set titles take priority over message previews.
  */
 export function getSessionDisplayText(session: SessionMetadata): string {
+    // AI/user titles are semantic — prefer them
+    if (session.titleSource === 'auto' || session.titleSource === 'user') {
+        const raw = session.title || '';
+        return raw.length <= PREVIEW_MAX_LENGTH ? raw : raw.slice(0, PREVIEW_MAX_LENGTH) + '...';
+    }
+    // Fallback: message preview > default title
     const raw = session.lastMessagePreview || session.title;
     if (raw.length <= PREVIEW_MAX_LENGTH) return raw;
     return raw.slice(0, PREVIEW_MAX_LENGTH) + '...';

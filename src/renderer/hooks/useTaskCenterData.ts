@@ -11,6 +11,7 @@ import { loadAppConfig } from '@/config/configService';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import type { CronTask } from '@/types/cronTask';
 import type { ImBotStatus, ImBotConfig } from '../../shared/types/im';
+import { CUSTOM_EVENTS } from '../../shared/constants';
 
 // ===== Types =====
 
@@ -144,6 +145,13 @@ export function useTaskCenterData({ isActive }: UseTaskCenterDataOptions): TaskC
         if (!wasInactive || !isActive) return;
         void fetchData(0);
     }, [isActive, fetchData]);
+
+    // Refresh sessions when a session title changes (auto-generated or user rename)
+    useEffect(() => {
+        const handler = () => refreshSessionsDebounced(300);
+        window.addEventListener(CUSTOM_EVENTS.SESSION_TITLE_CHANGED, handler);
+        return () => window.removeEventListener(CUSTOM_EVENTS.SESSION_TITLE_CHANGED, handler);
+    }, [refreshSessionsDebounced]);
 
     // Event listeners for real-time updates
     useEffect(() => {

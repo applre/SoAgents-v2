@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react';
+import { flushSync } from 'react-dom';
 import type { Tab } from '@/types/tab';
 
 interface UseTabSwipeGestureOptions {
@@ -8,28 +9,75 @@ interface UseTabSwipeGestureOptions {
   onSwitchTab: (tabId: string) => void;
 }
 
+interface VelocitySample {
+  delta: number;  // px (positive = rightward)
+  time: number;   // performance.now()
+}
+
+interface MergedPoint {
+  deltaSum: number;
+  time: number;
+}
+
 interface SwipeState {
   phase: 'idle' | 'tracking' | 'animating';
   direction: 'horizontal' | 'vertical' | null;
-  offsetX: number;
-  velocity: number;
-  lastDeltaX: number;
-  lastTimestamp: number;
+  offsetX: number;              // cumulative px; positive = shifted right (previous tab)
+  velocitySamples: VelocitySample[];
+  generation: number;           // incremented per animation — stale listeners check this
   idleTimer: ReturnType<typeof setTimeout> | null;
-  directionResetTimer: ReturnType<typeof setTimeout> | null; // reset vertical direction lock
-  snapTimer: ReturnType<typeof setTimeout> | null;           // safety timeout for snap animation
-  // DOM elements being manipulated during gesture
+  dirResetTimer: ReturnType<typeof setTimeout> | null;
+  snapTimer: ReturnType<typeof setTimeout> | null;
   currentEl: HTMLElement | null;
   adjacentEl: HTMLElement | null;
   adjacentIndex: number;
+  activeOnEnd: (() => void) | null;
+  activeOnEndEl: HTMLElement | null;
+  cooldownUntil: number;
+  // Momentum detection (acceleration factor analysis, adapted from wheel-gestures)
+  mergeCount: number;
+  mergeDeltaSum: number;
+  mergeTimeSum: number;
+  prevMergedPoint: MergedPoint | null;
+  prevMergedVelocity: number;
+  accFactors: number[];
+  momentumFlag: boolean;
 }
 
-const IDLE_TIMEOUT = 150;          // ms — detect finger lift
-const SWITCH_THRESHOLD_RATIO = 0.2; // 20% of container width
-const VELOCITY_THRESHOLD = 500;     // px/s — fast swipe triggers switch
-const RUBBER_BAND_MAX = 80;         // px — max rubber band stretch
-const SNAP_DURATION = 300;          // ms
-const SNAP_EASING = 'cubic-bezier(0.25, 1, 0.5, 1)';
+// --- Tuning constants ---
+const DIR_LOCK_RATIO = 1.2;
+const DIR_LOCK_MIN = 2;
+const DIR_RESET_TIMEOUT = 150;         // ms — reset vertical direction lock
+
+const VELOCITY_SAMPLES = 5;
+const VELOCITY_SAMPLE_MAX_AGE = 100;   // ms — discard samples older than this
+const COMMIT_VELOCITY = 300;           // px/s — snap-decision velocity threshold (on idle timer)
+const PROACTIVE_COMMIT_VELOCITY = 300; // px/s — proactive commit during tracking
+const POSITION_THRESHOLD = 0.35;       // 35% of container width → switch on release
+const PROACTIVE_POSITION_MAX = 0.85;   // 85% → commit regardless of velocity (clearly switching)
+
+const IDLE_SLOW = 500;                 // ms — finger barely moving or paused
+const IDLE_FAST = 200;                 // ms — was recently moving fast → decide quickly after stop
+const IDLE_INERTIA_TAIL = 150;         // ms — inertia ending (small deltas + momentum confirmed)
+const INERTIA_TAIL_THRESHOLD = 3;      // px — delta below this = "tail" of inertia
+const IDLE_BOUNDARY = 30;              // ms — snap back quickly at boundaries
+
+// Momentum detection (adapted from wheel-gestures library)
+const ACC_FACTOR_MIN = 0.6;            // min acceleration factor for momentum
+const ACC_FACTOR_MAX = 0.96;           // max acceleration factor for momentum
+const EVENTS_TO_MERGE = 2;             // merge every 2 events for noise smoothing
+const ACC_FACTORS_NEEDED = 5;          // need 5 consecutive factors in range (~12 events total)
+
+const SNAP_DURATION = 200;             // ms
+const SNAP_EASING = 'cubic-bezier(0.2, 1, 0.3, 1)';
+const SNAP_SAFETY_BUFFER = 50;         // ms — fallback timeout margin
+const RUBBER_BAND_MAX = 80;            // px — max boundary stretch
+const COMMIT_COOLDOWN = 1200;          // ms — absorb inertial events after tab switch (covers full macOS inertia)
+const BOUNCE_COOLDOWN = 500;           // ms — absorb inertial events after bounce-back
+
+function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
+}
 
 export function useTabSwipeGesture({
   contentRef,
@@ -41,60 +89,75 @@ export function useTabSwipeGesture({
     phase: 'idle',
     direction: null,
     offsetX: 0,
-    velocity: 0,
-    lastDeltaX: 0,
-    lastTimestamp: 0,
+    velocitySamples: [],
+    generation: 0,
     idleTimer: null,
-    directionResetTimer: null,
+    dirResetTimer: null,
     snapTimer: null,
     currentEl: null,
     adjacentEl: null,
     adjacentIndex: -1,
+    activeOnEnd: null,
+    activeOnEndEl: null,
+    cooldownUntil: 0,
+    mergeCount: 0,
+    mergeDeltaSum: 0,
+    mergeTimeSum: 0,
+    prevMergedPoint: null,
+    prevMergedVelocity: 0,
+    accFactors: [],
+    momentumFlag: false,
   });
 
   useEffect(() => {
     const container = contentRef.current;
     if (!container) return;
-
     const state = stateRef.current;
 
+    // ─── Helpers ───────────────────────────────────────────────
+
     function getActiveIndex(): number {
-      const tabs = tabsRef.current;
-      const activeId = activeTabIdRef.current;
-      return tabs.findIndex((t) => t.id === activeId);
+      return tabsRef.current.findIndex(t => t.id === activeTabIdRef.current);
     }
 
     function getTabEl(index: number): HTMLElement | null {
-      const el = contentRef.current?.children[index] as HTMLElement | undefined;
-      return el ?? null;
+      return (contentRef.current?.children[index] as HTMLElement) ?? null;
+    }
+
+    function clearAllTimers() {
+      if (state.idleTimer !== null) { clearTimeout(state.idleTimer); state.idleTimer = null; }
+      if (state.dirResetTimer !== null) { clearTimeout(state.dirResetTimer); state.dirResetTimer = null; }
+      if (state.snapTimer !== null) { clearTimeout(state.snapTimer); state.snapTimer = null; }
+    }
+
+    function detachOnEnd() {
+      if (state.activeOnEnd && state.activeOnEndEl) {
+        state.activeOnEndEl.removeEventListener('transitionend', state.activeOnEnd);
+      }
+      state.activeOnEnd = null;
+      state.activeOnEndEl = null;
     }
 
     function resetState() {
-      if (state.idleTimer !== null) {
-        clearTimeout(state.idleTimer);
-        state.idleTimer = null;
-      }
-      if (state.directionResetTimer !== null) {
-        clearTimeout(state.directionResetTimer);
-        state.directionResetTimer = null;
-      }
-      if (state.snapTimer !== null) {
-        clearTimeout(state.snapTimer);
-        state.snapTimer = null;
-      }
+      clearAllTimers();
+      detachOnEnd();
       state.phase = 'idle';
       state.direction = null;
       state.offsetX = 0;
-      state.velocity = 0;
-      state.lastDeltaX = 0;
-      state.lastTimestamp = 0;
+      state.velocitySamples = [];
       state.currentEl = null;
       state.adjacentEl = null;
       state.adjacentIndex = -1;
+      state.mergeCount = 0;
+      state.mergeDeltaSum = 0;
+      state.mergeTimeSum = 0;
+      state.prevMergedPoint = null;
+      state.prevMergedVelocity = 0;
+      state.accFactors = [];
+      state.momentumFlag = false;
     }
 
     function cleanupDOM() {
-      // Restore all children to their original state
       const cont = contentRef.current;
       if (!cont) return;
       for (let i = 0; i < cont.children.length; i++) {
@@ -102,279 +165,416 @@ export function useTabSwipeGesture({
         el.style.transform = '';
         el.style.transition = '';
       }
-      // Restore adjacent tab visibility if it wasn't switched to
-      if (state.adjacentEl) {
-        const activeIdx = getActiveIndex();
-        if (state.adjacentIndex !== activeIdx) {
-          state.adjacentEl.classList.add('invisible');
-          state.adjacentEl.classList.add('pointer-events-none');
-          state.adjacentEl.style.contentVisibility = 'hidden';
-        }
+      if (state.adjacentEl && state.adjacentIndex !== getActiveIndex()) {
+        state.adjacentEl.classList.add('invisible', 'pointer-events-none');
+        state.adjacentEl.style.contentVisibility = 'hidden';
       }
     }
 
-    function showAdjacentTab(el: HTMLElement) {
-      el.classList.remove('invisible');
-      el.classList.remove('pointer-events-none');
+    function showTab(el: HTMLElement) {
+      el.classList.remove('invisible', 'pointer-events-none');
       el.style.contentVisibility = '';
     }
 
-    function rubberBand(offset: number): number {
-      // Diminishing return as offset grows
-      const sign = Math.sign(offset);
-      const abs = Math.abs(offset);
-      const dampened = RUBBER_BAND_MAX * (1 - Math.exp(-abs / (RUBBER_BAND_MAX * 2)));
-      return sign * dampened;
+    function hideTab(el: HTMLElement) {
+      el.style.transform = '';
+      el.classList.add('invisible', 'pointer-events-none');
+      el.style.contentVisibility = 'hidden';
     }
 
-    function animateSnap(commit: boolean, swipeDirection: -1 | 1) {
+    // ─── Velocity (with sample expiry) ────────────────────────
+
+    function addSample(delta: number) {
+      const now = performance.now();
+      state.velocitySamples.push({ delta, time: now });
+      while (state.velocitySamples.length > VELOCITY_SAMPLES) {
+        state.velocitySamples.shift();
+      }
+    }
+
+    function getVelocity(): number {
+      const s = state.velocitySamples;
+      if (s.length < 2) return 0;
+      const latest = s[s.length - 1].time;
+      const recent = s.filter(v => latest - v.time <= VELOCITY_SAMPLE_MAX_AGE);
+      if (recent.length < 2) return 0;
+      const dt = recent[recent.length - 1].time - recent[0].time;
+      if (dt < 1) return 0;
+      const totalDelta = recent.reduce((sum, v) => sum + v.delta, 0);
+      return (totalDelta / dt) * 1000;
+    }
+
+    // ─── Rubber band at boundaries ────────────────────────────
+
+    function rubberBand(offset: number): number {
+      const sign = Math.sign(offset);
+      const abs = Math.abs(offset);
+      return sign * RUBBER_BAND_MAX * (1 - Math.exp(-abs / (RUBBER_BAND_MAX * 2)));
+    }
+
+    // ─── Momentum detection (acceleration factor analysis) ────
+    // Adapted from the wheel-gestures library.
+    // Merges every 2 events into one data point, computes velocity between
+    // consecutive points, then checks if the velocity ratio (acceleration factor)
+    // is consistently in [0.6, 0.96] — the fingerprint of system-generated inertia.
+    // Human finger movement produces erratic ratios outside this range.
+
+    function feedMomentumDetector(delta: number): boolean {
+      state.mergeCount++;
+      state.mergeDeltaSum += delta;
+      state.mergeTimeSum += performance.now();
+
+      if (state.mergeCount < EVENTS_TO_MERGE) return false;
+
+      // Merge complete — create a data point
+      const point: MergedPoint = {
+        deltaSum: state.mergeDeltaSum,
+        time: state.mergeTimeSum / EVENTS_TO_MERGE,
+      };
+      state.mergeCount = 0;
+      state.mergeDeltaSum = 0;
+      state.mergeTimeSum = 0;
+
+      if (state.prevMergedPoint) {
+        const dt = point.time - state.prevMergedPoint.time;
+        if (dt > 0) {
+          const velocity = point.deltaSum / dt;
+
+          if (Math.abs(state.prevMergedVelocity) > 0.001) {
+            const factor = velocity / state.prevMergedVelocity;
+            state.accFactors.push(factor);
+            if (state.accFactors.length > ACC_FACTORS_NEEDED) {
+              state.accFactors.shift();
+            }
+          }
+
+          state.prevMergedVelocity = velocity;
+        }
+      }
+
+      state.prevMergedPoint = point;
+
+      // Check if we have enough factors and they're all in the momentum range
+      if (state.accFactors.length >= ACC_FACTORS_NEEDED) {
+        const isMomentum = state.accFactors.every(f => f >= ACC_FACTOR_MIN && f <= ACC_FACTOR_MAX);
+        state.momentumFlag = isMomentum;
+        return isMomentum;
+      }
+      return false;
+    }
+
+    // ─── Snap animation ───────────────────────────────────────
+    // ALL animations are non-cancellable. Once a decision is made, it's final.
+
+    function animateSnap(commit: boolean, swipeDir: -1 | 1) {
       state.phase = 'animating';
+      state.generation++;
+      const gen = state.generation;
+
       const cont = contentRef.current;
       if (!cont) { resetState(); return; }
 
-      const containerWidth = cont.clientWidth;
-      const currentEl = state.currentEl;
-      const adjacentEl = state.adjacentEl;
+      const cw = cont.clientWidth;
+      const curEl = state.currentEl;
+      const adjEl = state.adjacentEl;
+      if (!curEl) { cleanupDOM(); resetState(); return; }
 
-      if (!currentEl) { cleanupDOM(); resetState(); return; }
+      // If offset is negligible, skip animation entirely (transitionend won't fire)
+      if (!commit && Math.abs(state.offsetX) < 1 && !adjEl) {
+        cleanupDOM();
+        resetState();
+        return;
+      }
 
-      if (commit && adjacentEl) {
-        // Animate current tab off-screen, adjacent tab into view
-        const currentTarget = -swipeDirection * containerWidth;
-        const adjacentTarget = 0;
+      detachOnEnd();
 
-        currentEl.style.transition = `transform ${SNAP_DURATION}ms ${SNAP_EASING}`;
-        adjacentEl.style.transition = `transform ${SNAP_DURATION}ms ${SNAP_EASING}`;
-        currentEl.style.transform = `translateX(${currentTarget}px)`;
-        adjacentEl.style.transform = `translateX(${adjacentTarget}px)`;
-
+      if (commit && adjEl) {
+        const curTarget = swipeDir * cw;
         const newTabId = tabsRef.current[state.adjacentIndex]?.id;
+        const oldEl = curEl;
 
-        let handled = false;
+        // 1) Update tab bar IMMEDIATELY.
+        if (newTabId) {
+          flushSync(() => onSwitchTab(newTabId));
+          oldEl.style.visibility = 'visible';
+          oldEl.style.contentVisibility = 'visible';
+        }
+
+        // 2) Scale animation duration with remaining distance for a natural feel.
+        const remainingPct = 1 - Math.abs(state.offsetX) / cw;
+        const duration = Math.max(SNAP_DURATION, Math.round(remainingPct * 500));
+
+        // 3) Set transition property NOW (tells browser "animate transform changes").
+        curEl.style.transition = `transform ${duration}ms ${SNAP_EASING}`;
+        adjEl.style.transition = `transform ${duration}ms ${SNAP_EASING}`;
+
+        // 4) Defer the TARGET transform to the next frame.
+        //    This guarantees the browser has painted the current tracking position
+        //    as the "from" state. Setting transition + target in the same frame
+        //    causes WKWebView to skip the animation entirely.
+        const capturedCurEl = curEl;
+        const capturedAdjEl = adjEl;
+        requestAnimationFrame(() => {
+          if (state.generation !== gen) return;
+          capturedCurEl.style.transform = `translateX(${curTarget}px)`;
+          capturedAdjEl.style.transform = 'translateX(0)';
+        });
+
         const onEnd = () => {
-          if (handled) return;
-          handled = true;
-          if (state.snapTimer !== null) {
-            clearTimeout(state.snapTimer);
-            state.snapTimer = null;
-          }
-          adjacentEl.removeEventListener('transitionend', onEnd);
-          // Clean up all DOM modifications
-          cleanupDOM();
-          // Reset transforms — the new active tab will be shown by React state
+          if (state.generation !== gen) return;
+          state.generation++;
+          clearAllTimers();
+          detachOnEnd();
+          oldEl.style.visibility = '';
+          oldEl.style.contentVisibility = 'hidden';
           for (let i = 0; i < cont.children.length; i++) {
             const el = cont.children[i] as HTMLElement;
             el.style.transform = '';
             el.style.transition = '';
           }
           resetState();
-          // Commit the switch via React state
-          if (newTabId) {
-            onSwitchTab(newTabId);
-          }
+          state.cooldownUntil = performance.now() + COMMIT_COOLDOWN;
         };
-        adjacentEl.addEventListener('transitionend', onEnd, { once: true });
-        state.snapTimer = setTimeout(onEnd, SNAP_DURATION + 50);
+        adjEl.addEventListener('transitionend', onEnd, { once: true });
+        state.activeOnEnd = onEnd;
+        state.activeOnEndEl = adjEl;
+        // +32ms accounts for rAF delay before transition starts
+        state.snapTimer = setTimeout(onEnd, duration + SNAP_SAFETY_BUFFER + 32);
       } else {
-        // Bounce back to original position
-        currentEl.style.transition = `transform ${SNAP_DURATION}ms ${SNAP_EASING}`;
-        currentEl.style.transform = 'translateX(0)';
-
-        if (adjacentEl) {
-          adjacentEl.style.transition = `transform ${SNAP_DURATION}ms ${SNAP_EASING}`;
-          const adjacentBasePos = swipeDirection > 0 ? -containerWidth : containerWidth;
-          adjacentEl.style.transform = `translateX(${adjacentBasePos}px)`;
+        // Bounce back — defer target to next frame for reliable transition
+        curEl.style.transition = `transform ${SNAP_DURATION}ms ${SNAP_EASING}`;
+        if (adjEl) {
+          adjEl.style.transition = `transform ${SNAP_DURATION}ms ${SNAP_EASING}`;
         }
 
-        const targetEl = adjacentEl ?? currentEl;
-        let handled = false;
-        const onEnd = () => {
-          if (handled) return;
-          handled = true;
-          if (state.snapTimer !== null) {
-            clearTimeout(state.snapTimer);
-            state.snapTimer = null;
+        const capturedCurEl = curEl;
+        const capturedAdjEl = adjEl;
+        const bounceAdjBase = swipeDir > 0 ? -cw : cw;
+        requestAnimationFrame(() => {
+          if (state.generation !== gen) return;
+          capturedCurEl.style.transform = 'translateX(0)';
+          if (capturedAdjEl) {
+            capturedAdjEl.style.transform = `translateX(${bounceAdjBase}px)`;
           }
-          targetEl.removeEventListener('transitionend', onEnd);
+        });
+
+        const listenEl = adjEl ?? curEl;
+        const onEnd = () => {
+          if (state.generation !== gen) return;
+          state.generation++;
+          clearAllTimers();
+          detachOnEnd();
           cleanupDOM();
           resetState();
+          state.cooldownUntil = performance.now() + BOUNCE_COOLDOWN;
         };
-        targetEl.addEventListener('transitionend', onEnd, { once: true });
-        state.snapTimer = setTimeout(onEnd, SNAP_DURATION + 50);
+        listenEl.addEventListener('transitionend', onEnd, { once: true });
+        state.activeOnEnd = onEnd;
+        state.activeOnEndEl = listenEl;
+        state.snapTimer = setTimeout(onEnd, SNAP_DURATION + SNAP_SAFETY_BUFFER + 32);
       }
     }
 
-    function onIdle() {
-      if (state.phase !== 'tracking') return;
+    // ─── Snap decision ────────────────────────────────────────
 
+    function makeSnapDecision() {
+      if (state.phase !== 'tracking') return;
       const cont = contentRef.current;
       if (!cont) { resetState(); return; }
 
-      const containerWidth = cont.clientWidth;
-      const threshold = containerWidth * SWITCH_THRESHOLD_RATIO;
-      const shouldSwitch =
-        (Math.abs(state.offsetX) > threshold || Math.abs(state.velocity) > VELOCITY_THRESHOLD) &&
-        state.adjacentEl !== null;
+      const cw = cont.clientWidth;
+      const v = getVelocity();
+      const offsetDir: -1 | 1 = state.offsetX > 0 ? 1 : -1;
 
-      // Determine swipe direction: positive offsetX = swiping right = go to previous tab
-      const swipeDir: -1 | 1 = state.offsetX > 0 ? 1 : -1;
+      const positionTriggered = Math.abs(state.offsetX) > cw * POSITION_THRESHOLD;
+      const velocityTriggered = Math.abs(v) > COMMIT_VELOCITY;
 
-      animateSnap(shouldSwitch, swipeDir);
+      let shouldCommit = state.adjacentEl !== null && (positionTriggered || velocityTriggered);
+      if (shouldCommit && velocityTriggered && !positionTriggered) {
+        const velDir = v > 0 ? 1 : -1;
+        if (velDir !== offsetDir) shouldCommit = false;
+      }
+
+      animateSnap(shouldCommit, offsetDir);
     }
 
-    function cancelOngoingAnimation() {
-      // If animating, read current computed transform and continue from there
-      if (state.currentEl) {
-        const computedTransform = getComputedStyle(state.currentEl).transform;
-        state.currentEl.style.transition = '';
-        state.currentEl.style.transform = computedTransform === 'none' ? '' : computedTransform;
-        // Parse translateX from matrix
-        if (computedTransform && computedTransform !== 'none') {
-          const match = computedTransform.match(/matrix.*\((.+)\)/);
-          if (match) {
-            const values = match[1].split(',').map(Number);
-            state.offsetX = values[4] ?? 0; // translateX is the 5th value
-          }
-        }
-      }
-      if (state.adjacentEl) {
-        const computedTransform = getComputedStyle(state.adjacentEl).transform;
-        state.adjacentEl.style.transition = '';
-        state.adjacentEl.style.transform = computedTransform === 'none' ? '' : computedTransform;
-      }
-      state.phase = 'tracking';
-    }
+    // ─── Main wheel handler ───────────────────────────────────
 
     function handleWheel(e: WheelEvent) {
+      // Absorb events during cooldown (post-animation inertial events)
+      if (state.cooldownUntil > 0 && performance.now() < state.cooldownUntil) {
+        e.preventDefault();
+        return;
+      }
+      state.cooldownUntil = 0;
+
       const tabs = tabsRef.current;
-      if (tabs.length <= 1) return;
+      if (tabs.length <= 1) {
+        if (state.phase !== 'idle') {
+          cleanupDOM();
+          resetState();
+        }
+        return;
+      }
 
       const cont = contentRef.current;
       if (!cont) return;
 
       const { deltaX, deltaY } = e;
-
-      // Skip zero-motion events
       if (deltaX === 0 && deltaY === 0) return;
 
-      // === Direction lock ===
-      if (state.direction === null && state.phase !== 'animating') {
-        // Determine direction from first meaningful wheel event
-        const absX = Math.abs(deltaX);
-        const absY = Math.abs(deltaY);
-        if (absX < 2 && absY < 2) return; // too small to determine
+      // WebKit (Tauri WKWebView on macOS) may expose gesture phase.
+      // Note: these are non-standard and may not be available in all browsers.
+      const wheelPhase = (e as unknown as { phase?: number }).phase;
+      const momentumPhase = (e as unknown as { momentumPhase?: number }).momentumPhase;
 
-        if (absX > absY * 1.2) {
-          state.direction = 'horizontal';
-        } else {
-          state.direction = 'vertical';
-          return; // let vertical scroll happen normally
-        }
+      // ── Direction lock ──
+      if (state.direction === null && state.phase !== 'animating') {
+        const ax = Math.abs(deltaX);
+        const ay = Math.abs(deltaY);
+        if (ax < DIR_LOCK_MIN && ay < DIR_LOCK_MIN) return;
+        state.direction = ax > ay * DIR_LOCK_RATIO ? 'horizontal' : 'vertical';
+        if (state.direction === 'vertical') return;
       }
 
       if (state.direction === 'vertical') {
-        // Reset direction lock after idle so future horizontal swipes work
-        if (state.directionResetTimer !== null) {
-          clearTimeout(state.directionResetTimer);
-        }
-        state.directionResetTimer = setTimeout(() => {
+        if (state.dirResetTimer !== null) clearTimeout(state.dirResetTimer);
+        state.dirResetTimer = setTimeout(() => {
           state.direction = null;
-          state.directionResetTimer = null;
-        }, IDLE_TIMEOUT);
+          state.dirResetTimer = null;
+        }, DIR_RESET_TIMEOUT);
         return;
       }
 
-      // Horizontal swipe detected — prevent default scroll behavior
       e.preventDefault();
 
-      // === Handle interrupting an ongoing animation ===
+      // ── All animations are final — absorb events until completion + cooldown ──
       if (state.phase === 'animating') {
-        cancelOngoingAnimation();
+        return;
       }
 
-      // === Initialize tracking ===
-      const now = performance.now();
+      // ── Init tracking ──
       const activeIndex = getActiveIndex();
       if (activeIndex === -1) return;
+      const cw = cont.clientWidth;
 
       if (state.phase === 'idle') {
         state.phase = 'tracking';
         state.offsetX = 0;
-        state.velocity = 0;
+        state.velocitySamples = [];
         state.currentEl = getTabEl(activeIndex);
         state.adjacentEl = null;
         state.adjacentIndex = -1;
-        state.lastTimestamp = now;
+        state.mergeCount = 0;
+        state.mergeDeltaSum = 0;
+        state.mergeTimeSum = 0;
+        state.prevMergedPoint = null;
+        state.prevMergedVelocity = 0;
+        state.accFactors = [];
+        state.momentumFlag = false;
       }
 
-      // === Accumulate offset ===
-      // macOS wheel deltaX: positive = scroll right (content moves left) = swipe left
-      // We want: swipe left = go to next tab, so offsetX negative = next tab
-      state.offsetX -= deltaX;
+      // ── Accumulate offset (CLAMPED to ±containerWidth) ──
+      state.offsetX = clamp(state.offsetX - deltaX, -cw, cw);
+      addSample(-deltaX);
 
-      // === Calculate velocity ===
-      const dt = now - state.lastTimestamp;
-      if (dt > 0) {
-        state.velocity = -deltaX / (dt / 1000);
-      }
-      state.lastDeltaX = deltaX;
-      state.lastTimestamp = now;
+      // ── Feed momentum detector ──
+      const momentumDetected = feedMomentumDetector(-deltaX);
 
-      // === Determine adjacent tab ===
-      const containerWidth = cont.clientWidth;
-      const desiredAdjacentIndex = state.offsetX > 0
-        ? activeIndex - 1  // swiping right → previous tab
-        : activeIndex + 1; // swiping left → next tab
+      // ── Resolve adjacent tab ──
+      const wantIdx = state.offsetX > 0
+        ? activeIndex - 1
+        : activeIndex + 1;
+      const atBoundary = wantIdx < 0 || wantIdx >= tabs.length;
 
-      const isAtBoundary = desiredAdjacentIndex < 0 || desiredAdjacentIndex >= tabs.length;
-
-      // Update adjacent tab element if direction changed
-      if (!isAtBoundary && state.adjacentIndex !== desiredAdjacentIndex) {
-        // Hide previous adjacent if any
-        if (state.adjacentEl && state.adjacentIndex !== activeIndex) {
-          state.adjacentEl.style.transform = '';
-          state.adjacentEl.classList.add('invisible');
-          state.adjacentEl.classList.add('pointer-events-none');
-          state.adjacentEl.style.contentVisibility = 'hidden';
-        }
-        state.adjacentIndex = desiredAdjacentIndex;
-        state.adjacentEl = getTabEl(desiredAdjacentIndex);
+      if (!atBoundary && state.adjacentIndex !== wantIdx) {
+        if (state.adjacentEl && state.adjacentIndex !== activeIndex) hideTab(state.adjacentEl);
+        state.adjacentIndex = wantIdx;
+        state.adjacentEl = getTabEl(wantIdx);
         if (state.adjacentEl) {
-          showAdjacentTab(state.adjacentEl);
+          const adjOff = state.offsetX > 0 ? -cw + state.offsetX : cw + state.offsetX;
+          state.adjacentEl.style.transform = `translateX(${adjOff}px)`;
+          showTab(state.adjacentEl);
         }
       }
 
-      // === Apply transforms ===
-      let effectiveOffset = state.offsetX;
-      if (isAtBoundary) {
-        effectiveOffset = rubberBand(state.offsetX);
-        // Hide adjacent if we're at boundary (no adjacent to show)
+      // ── Apply transforms ──
+      let visOffset = state.offsetX;
+      if (atBoundary) {
+        visOffset = rubberBand(state.offsetX);
         if (state.adjacentEl && state.adjacentIndex !== activeIndex) {
-          state.adjacentEl.style.transform = '';
-          state.adjacentEl.classList.add('invisible');
-          state.adjacentEl.classList.add('pointer-events-none');
-          state.adjacentEl.style.contentVisibility = 'hidden';
+          hideTab(state.adjacentEl);
           state.adjacentEl = null;
           state.adjacentIndex = -1;
         }
       }
 
       if (state.currentEl) {
-        state.currentEl.style.transform = `translateX(${effectiveOffset}px)`;
+        state.currentEl.style.transform = `translateX(${visOffset}px)`;
       }
-      if (state.adjacentEl && !isAtBoundary) {
-        // Position adjacent tab off-screen in the correct direction
-        const adjacentOffset = state.offsetX > 0
-          ? -containerWidth + effectiveOffset  // coming from the left
-          : containerWidth + effectiveOffset;   // coming from the right
-        state.adjacentEl.style.transform = `translateX(${adjacentOffset}px)`;
+      if (state.adjacentEl && !atBoundary) {
+        const adjOff = state.offsetX > 0
+          ? -cw + visOffset
+          : cw + visOffset;
+        state.adjacentEl.style.transform = `translateX(${adjOff}px)`;
       }
 
-      // === Reset idle timer ===
-      if (state.idleTimer !== null) {
-        clearTimeout(state.idleTimer);
+      // ── Proactive commit (prevents inertia drift / overshoot) ──
+      // When content crosses threshold with clear velocity, commit IMMEDIATELY.
+      // This mirrors native macOS: once the swipe is decisive, the system locks in.
+      // Without this, inertia events keep drifting the content past the target.
+      if (state.adjacentEl && !atBoundary) {
+        const positionPct = Math.abs(state.offsetX) / cw;
+        const v = getVelocity();
+        const vDir = v > 0 ? 1 : -1;
+        const oDir: -1 | 1 = state.offsetX > 0 ? 1 : -1;
+
+        const fastSwipe = positionPct > POSITION_THRESHOLD
+          && Math.abs(v) > PROACTIVE_COMMIT_VELOCITY
+          && vDir === oDir;
+        const nearTarget = positionPct > PROACTIVE_POSITION_MAX;
+
+        if (fastSwipe || nearTarget) {
+          if (state.idleTimer !== null) { clearTimeout(state.idleTimer); state.idleTimer = null; }
+          animateSnap(true, oDir);
+          return;
+        }
       }
-      state.idleTimer = setTimeout(onIdle, IDLE_TIMEOUT);
+
+      // ── WebKit phase-based gesture end (if available) ──
+      if (wheelPhase === 8 || wheelPhase === 16) {
+        if (state.idleTimer !== null) { clearTimeout(state.idleTimer); state.idleTimer = null; }
+        makeSnapDecision();
+        return;
+      }
+
+      // ── WebKit momentum phase: finger already lifted ──
+      if (typeof momentumPhase === 'number' && momentumPhase > 0) {
+        if (state.idleTimer !== null) { clearTimeout(state.idleTimer); state.idleTimer = null; }
+        makeSnapDecision();
+        return;
+      }
+
+      // ── Idle timer (velocity-aware) ──
+      // Timer resets on every event; only fires when events STOP.
+      // Timeout scales with recent velocity:
+      //   - Inertia tail (momentum + tiny delta) → 150ms (inertia ending)
+      //   - Fast movement (v > COMMIT_VELOCITY)  → 200ms (quick flick → decide fast)
+      //   - Slow / paused                        → 500ms (finger might still be on pad)
+      if (atBoundary) {
+        if (state.idleTimer === null) {
+          state.idleTimer = setTimeout(makeSnapDecision, IDLE_BOUNDARY);
+        }
+      } else {
+        if (state.idleTimer !== null) clearTimeout(state.idleTimer);
+        const absDelta = Math.abs(deltaX);
+        const isInertiaTail = state.momentumFlag && absDelta < INERTIA_TAIL_THRESHOLD;
+        const recentV = Math.abs(getVelocity());
+        const timeout = isInertiaTail ? IDLE_INERTIA_TAIL
+          : recentV > COMMIT_VELOCITY ? IDLE_FAST
+          : IDLE_SLOW;
+        state.idleTimer = setTimeout(makeSnapDecision, timeout);
+      }
     }
 
     container.addEventListener('wheel', handleWheel, { passive: false });
@@ -382,7 +582,7 @@ export function useTabSwipeGesture({
     return () => {
       container.removeEventListener('wheel', handleWheel);
       cleanupDOM();
-      resetState(); // clears all timers (idleTimer, directionResetTimer, snapTimer)
+      resetState();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- refs are stable
   }, []);

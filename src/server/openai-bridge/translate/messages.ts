@@ -119,7 +119,7 @@ function translateAssistantMessage(msg: AnthropicMessage, result: OpenAIMessage[
 
   const textParts: string[] = [];
   const thinkingParts: string[] = [];
-  const toolCalls: { id: string; type: 'function'; function: { name: string; arguments: string } }[] = [];
+  const toolCalls: { id: string; type: 'function'; function: { name: string; arguments: string }; thought_signature?: string }[] = [];
 
   for (const block of msg.content) {
     if (block.type === 'text') {
@@ -132,6 +132,8 @@ function translateAssistantMessage(msg: AnthropicMessage, result: OpenAIMessage[
           name: block.name,
           arguments: JSON.stringify(block.input),
         },
+        // Gemini thinking models require round-tripping thought_signature
+        ...(block.thought_signature ? { thought_signature: block.thought_signature } : {}),
       });
     } else if (block.type === 'thinking') {
       // Preserve thinking blocks as reasoning_content for upstream models

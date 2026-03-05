@@ -55,6 +55,8 @@ export interface OpenAIToolCall {
     name: string;
     arguments: string;
   };
+  /** Gemini thinking models require round-tripping this field on tool calls */
+  thought_signature?: string;
 }
 
 export interface OpenAIToolDefinition {
@@ -137,4 +139,6 @@ export interface OpenAIStreamToolCall {
     name?: string;
     arguments?: string;
   };
+  /** Gemini thinking models include this on tool call chunks */
+  thought_signature?: string;
 }

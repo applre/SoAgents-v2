@@ -54,6 +54,8 @@ export interface AnthropicToolUseBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** Gemini thinking models: round-trip opaque signature for tool calls */
+  thought_signature?: string;
 }
 
 export interface AnthropicToolResultBlock {
@@ -105,7 +107,7 @@ export interface AnthropicResponse {
 
 export type AnthropicResponseContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; thought_signature?: string }
   | { type: 'thinking'; thinking: string; signature: string };
 
 export type AnthropicStopReason = 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';

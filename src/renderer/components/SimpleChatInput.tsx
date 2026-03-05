@@ -1256,10 +1256,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
           </div>
           </div>
 
-          {/* Toolbar row */}
-          <div className="toolbar-menus flex items-center justify-between px-3 pb-2 pt-1">
+          {/* Toolbar row — container query: hides text labels when narrow */}
+          <div className="toolbar-menus flex items-center justify-between px-3 pb-2 pt-1 flex-nowrap min-w-0" style={{ containerType: 'inline-size' }}>
             {/* Left side - action buttons */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 min-w-0 flex-nowrap">
               {/* Optional prefix (e.g., workspace selector in launcher mode) */}
               {toolbarPrefix}
 
@@ -1372,7 +1372,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   title="切换执行模式"
                 >
                   <span>{PERMISSION_MODES.find(m => m.value === permissionMode)?.icon}</span>
-                  <span>{PERMISSION_MODES.find(m => m.value === permissionMode)?.label}</span>
+                  <span className="toolbar-label">{PERMISSION_MODES.find(m => m.value === permissionMode)?.label}</span>
                   <ChevronUp className="h-3 w-3" />
                 </button>
                 {showModeMenu && (
@@ -1437,7 +1437,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   title="使用工具"
                 >
                   <Wrench className="h-3.5 w-3.5" />
-                  <span>工具</span>
+                  <span className="toolbar-label">工具</span>
                   {workspaceMcpEnabled.length > 0 && (
                     <span className="text-[11px] text-[var(--ink-muted)]">
                       {workspaceMcpEnabled.length}
@@ -1536,13 +1536,13 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   title={cronModeEnabled ? '心跳循环已启用' : '开启心跳循环'}
                 >
                   <HeartPulse className="h-3.5 w-3.5" />
-                  <span>心跳</span>
+                  <span className="toolbar-label">心跳</span>
                 </button>
               )}
             </div>
 
             {/* Right side - model selector + send/stop button */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {/* Model Dropdown with Provider Selector */}
               <div className="relative">
                 <button
@@ -1562,8 +1562,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                   title="切换模型"
                 >
-                  <span>{currentModelName}</span>
-                  <ChevronUp className="h-3 w-3" />
+                  <span className="max-w-[140px] truncate">{currentModelName}</span>
+                  <ChevronUp className="h-3 w-3 shrink-0" />
                 </button>
                 {showModelMenu && (() => {
                   const availableProviders = (providers ?? []).filter(p => isProviderAvailable(p));

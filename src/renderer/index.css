@@ -708,3 +708,10 @@ code {
 .prose * {
   user-select: text;
 }
+
+/* ── Toolbar responsive: hide text labels when container is narrow ── */
+@container (max-width: 480px) {
+  .toolbar-menus .toolbar-label {
+    display: none;
+  }
+}

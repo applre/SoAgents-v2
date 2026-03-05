@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { BarChart2, Clock, Trash2 } from 'lucide-react';
 
 import { deleteSession, getSessions, type SessionMetadata } from '@/api/sessionClient';
@@ -366,13 +367,14 @@ export default function SessionHistoryDropdown({
                 </div>
             </div>
 
-            {/* Stats Modal */}
-            {statsSession && (
+            {/* Stats Modal — portal to document root to escape stacking context */}
+            {statsSession && createPortal(
                 <SessionStatsModal
                     sessionId={statsSession.id}
                     sessionTitle={statsSession.title}
                     onClose={() => setStatsSession(null)}
-                />
+                />,
+                document.body,
             )}
         </>
     );

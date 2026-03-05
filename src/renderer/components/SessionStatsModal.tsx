@@ -71,7 +71,7 @@ export default function SessionStatsModal({
 
     return (
         <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/30 backdrop-blur-sm"
             style={{ padding: '4vh 4vw' }}
             onMouseDown={handleBackdropMouseDown}
             onClick={handleBackdropClick}
@@ -119,7 +119,7 @@ export default function SessionStatsModal({
                         <div className="space-y-6">
                             {/* Summary Cards */}
                             <div className="grid grid-cols-3 gap-4">
-                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] p-4">
+                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
                                         <MessageSquare className="h-4 w-4" />
                                         <span className="text-xs">消息数</span>
@@ -128,7 +128,7 @@ export default function SessionStatsModal({
                                         {stats.summary.messageCount}
                                     </div>
                                 </div>
-                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] p-4">
+                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
                                         <BarChart2 className="h-4 w-4" />
                                         <span className="text-xs">总 Tokens</span>
@@ -141,7 +141,7 @@ export default function SessionStatsModal({
                                         {formatTokens(stats.summary.totalOutputTokens)}
                                     </div>
                                 </div>
-                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] p-4">
+                                <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
                                     <div className="flex items-center gap-2 text-[var(--ink-muted)]">
                                         <Clock className="h-4 w-4" />
                                         <span className="text-xs">输入缓存</span>
@@ -163,7 +163,7 @@ export default function SessionStatsModal({
                                     </h3>
                                     <div className="overflow-hidden rounded-lg border border-[var(--line)]">
                                         <table className="w-full text-sm">
-                                            <thead className="bg-[var(--paper-inset)]">
+                                            <thead className="bg-[var(--paper-elevated)]">
                                                 <tr>
                                                     <th className="px-4 py-2 text-left text-xs font-medium text-[var(--ink-muted)]">
                                                         模型
@@ -219,7 +219,7 @@ export default function SessionStatsModal({
                                     <div className="overflow-hidden rounded-lg border border-[var(--line)]">
                                         <div className="max-h-64 overflow-y-auto">
                                             <table className="w-full text-sm">
-                                                <thead className="sticky top-0 bg-[var(--paper-inset)]">
+                                                <thead className="sticky top-0 bg-[var(--paper-elevated)]">
                                                     <tr>
                                                         <th className="px-4 py-2 text-left text-xs font-medium text-[var(--ink-muted)]">
                                                             问题

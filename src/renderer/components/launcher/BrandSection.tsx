@@ -85,7 +85,7 @@ export default memo(function BrandSection({
             {/* Upper area: Brand Name + Slogans */}
             <div className="flex flex-1 flex-col items-center justify-center">
                 <h1 className="brand-title mb-5 text-[2.5rem] text-[var(--ink)] md:text-[3.5rem]">
-                    MyAgents
+                    SoAgents
                 </h1>
                 <p className="brand-slogan text-center text-[15px] text-[var(--ink-muted)] md:text-[17px]">
                     每个人都应享受智能的推背感，欢迎来到言出法随的世界

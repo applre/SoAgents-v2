@@ -20,12 +20,12 @@ export type InteractionScenario =
 // ===== Inline templates =====
 
 const TMPL_BASE_IDENTITY = `<myagents-identity>
-你正运行在 MyAgents —— 一款基于 Claude Agent SDK 的桌面端 AI Agent 应用中。
+你正运行在 SoAgents —— 一款基于 Claude Agent SDK 的桌面端 AI Agent 应用中。
 用户全局配置目录: ~/.myagents
 </myagents-identity>`;
 
 const TMPL_CHANNEL_DESKTOP = `<myagents-interaction-channel>
-用户正通过 MyAgents 桌面客户端与你对话。
+用户正通过 SoAgents 桌面客户端与你对话。
 </myagents-interaction-channel>`;
 
 const TMPL_CHANNEL_IM = `<myagents-interaction-channel>

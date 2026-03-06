@@ -1,21 +1,19 @@
 {
-  "name": "myagents",
-  "description": "MyAgents - Desktop Claude Code for everyone. AI-powered productivity, not just for developers.",
+  "name": "soagents",
+  "description": "SoAgents - Desktop Claude Code for everyone. AI-powered productivity, not just for developers.",
   "type": "module",
   "version": "0.1.36",
   "license": "Apache-2.0",
   "packageManager": "bun@1.3.2",
   "author": {
-    "name": "MyAgents Team",
-    "email": "myagents.io@gmail.com"
+    "name": "SoAgents Team"
   },
-  "homepage": "https://myagents.io",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hAcKlyc/MyAgents.git"
+    "url": "https://github.com/applre/SoAgents-v2.git"
   },
   "bugs": {
-    "url": "https://github.com/hAcKlyc/MyAgents/issues"
+    "url": "https://github.com/applre/SoAgents-v2/issues"
   },
   "keywords": [
     "claude",

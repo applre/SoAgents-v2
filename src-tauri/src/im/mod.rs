@@ -811,7 +811,7 @@ pub async fn start_im_bot<R: Runtime>(
                         } else {
                             let _ = adapter_for_reply.send_message(
                                 &chat_id,
-                                "❌ 绑定码无效或已过期，请在 MyAgents 设置中重新获取二维码。",
+                                "❌ 绑定码无效或已过期，请在 SoAgents 设置中重新获取二维码。",
                             ).await;
                         }
                         continue;
@@ -821,7 +821,7 @@ pub async fn start_im_bot<R: Runtime>(
                     if text == "/start" {
                         let _ = adapter_for_reply.send_message(
                             &chat_id,
-                            "👋 你好！我是 MyAgents Bot。\n\n\
+                            "👋 你好！我是 SoAgents Bot。\n\n\
                              可用命令：\n\
                              /help — 查看所有命令\n\
                              /new — 开始新对话\n\

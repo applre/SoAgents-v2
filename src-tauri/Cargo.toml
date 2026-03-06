@@ -1,11 +1,10 @@
 [package]
-name = "myagents"
+name = "soagents"
 version = "0.1.36"
-description = "MyAgents - Desktop Claude Code for everyone"
-authors = ["MyAgents Team <myagents.io@gmail.com>"]
+description = "SoAgents - Desktop Claude Code for everyone"
+authors = ["SoAgents Team"]
 license = "Apache-2.0"
-repository = "https://github.com/hAcKlyc/MyAgents"
-homepage = "https://myagents.io"
+repository = "https://github.com/applre/SoAgents-v2"
 edition = "2021"
 rust-version = "1.77.2"
 

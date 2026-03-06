@@ -2520,7 +2520,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "myagents"
+name = "soagents"
 version = "0.1.36"
 dependencies = [
  "axum",

@@ -2190,7 +2190,7 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                                     <div className="flex-1 pr-4">
                                         <p className="text-sm font-medium text-[var(--ink)]">开机启动</p>
                                         <p className="text-xs text-[var(--ink-muted)]">
-                                            系统启动时自动运行 MyAgents
+                                            系统启动时自动运行 SoAgents
                                         </p>
                                     </div>
                                     <button
@@ -2523,7 +2523,7 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                                         className="brand-title text-[3rem] text-[var(--ink)] cursor-default select-none"
                                         onClick={handleLogoTap}
                                     >
-                                        MyAgents
+                                        SoAgents
                                     </h1>
                                     <div className="mt-1 flex items-center gap-2">
                                         <p className="text-sm font-medium text-[var(--ink-muted)]">
@@ -2586,13 +2586,13 @@ export default function Settings({ initialSection, initialMcpId, onSectionChange
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                 <div className="space-y-4 text-sm leading-relaxed text-[var(--ink-secondary)]">
                                     <p>
-                                        <span className="font-medium text-[var(--ink)]">MyAgents</span> 是一款本地运行的 AI Agent 桌面客户端，基于 Claude Agent SDK 运行，同时支持接入各家大模型与快速切换服务。
+                                        <span className="font-medium text-[var(--ink)]">SoAgents</span> 是一款本地运行的 AI Agent 桌面客户端，基于 Claude Agent SDK 运行，同时支持接入各家大模型与快速切换服务。
                                     </p>
                                     <p>
-                                        MyAgents 已支持多标签页、多项目管理，让大家可以同时在电脑上跑若干个 Agent。Agent 可以读取文件、创建文档、执行命令——所有操作都在本地完成，让数据始终留在你的电脑里。
+                                        SoAgents 已支持多标签页、多项目管理，让大家可以同时在电脑上跑若干个 Agent。Agent 可以读取文件、创建文档、执行命令——所有操作都在本地完成，让数据始终留在你的电脑里。
                                     </p>
                                     <p className="text-[var(--ink-muted)] italic">
-                                        Claude Code 这类 Agent 让开发者首先见识到了 AGI 的雏形，那么我们希望 MyAgents 成为让更多的非开发者也能体会到创作的乐趣，体会到来自 AI 智能的推背感，成就更好的自己。
+                                        Claude Code 这类 Agent 让开发者首先见识到了 AGI 的雏形，那么我们希望 SoAgents 成为让更多的非开发者也能体会到创作的乐趣，体会到来自 AI 智能的推背感，成就更好的自己。
                                     </p>
                                 </div>
                             </div>

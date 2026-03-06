@@ -463,7 +463,7 @@ pub async fn test_update_connectivity(app: AppHandle) -> Result<String, String> 
     // Build a reqwest client with user's proxy configuration
     let current_version = app.package_info().version.to_string();
     let builder = reqwest::Client::builder()
-        .user_agent(format!("MyAgents-Updater/{}", current_version))
+        .user_agent(format!("SoAgents-Updater/{}", current_version))
         .timeout(std::time::Duration::from_secs(30));
 
     let client = proxy_config::build_client_with_proxy(builder)

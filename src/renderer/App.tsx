@@ -1524,7 +1524,7 @@ export default function App() {
             </div>
             <div className="px-5 py-4">
               <p className="text-[13px] leading-relaxed text-[var(--ink-muted)]">
-                {`~/.claude/settings.json 中检测到${claudeEnvOverride.baseUrl ? ` ANTHROPIC_BASE_URL = ${claudeEnvOverride.baseUrl.length > 60 ? claudeEnvOverride.baseUrl.slice(0, 60) + '...' : claudeEnvOverride.baseUrl}` : ''}${claudeEnvOverride.baseUrl && claudeEnvOverride.hasApiKey ? '，' : ''}${claudeEnvOverride.hasApiKey ? 'ANTHROPIC_API_KEY' : ''}，该配置会覆盖 MyAgents 的供应商设置，导致所有请求发送到非预期地址。是否清除？`}
+                {`~/.claude/settings.json 中检测到${claudeEnvOverride.baseUrl ? ` ANTHROPIC_BASE_URL = ${claudeEnvOverride.baseUrl.length > 60 ? claudeEnvOverride.baseUrl.slice(0, 60) + '...' : claudeEnvOverride.baseUrl}` : ''}${claudeEnvOverride.baseUrl && claudeEnvOverride.hasApiKey ? '，' : ''}${claudeEnvOverride.hasApiKey ? 'ANTHROPIC_API_KEY' : ''}，该配置会覆盖 SoAgents 的供应商设置，导致所有请求发送到非预期地址。是否清除？`}
               </p>
             </div>
             <div className="flex items-center justify-between border-t border-[var(--line)] px-5 py-3">

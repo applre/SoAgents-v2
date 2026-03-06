@@ -107,28 +107,28 @@ async function notify(title: string, body?: string): Promise<void> {
  * Notify that AI has completed a response
  */
 export function notifyMessageComplete(): void {
-    void notify('MyAgents - 任务完成', '请您查看结果');
+    void notify('SoAgents - 任务完成', '请您查看结果');
 }
 
 /**
  * Notify that AI is requesting permission
  */
 export function notifyPermissionRequest(toolName: string): void {
-    void notify('MyAgents - 权限请求', `AI 请求使用工具 - ${toolName}`);
+    void notify('SoAgents - 权限请求', `AI 请求使用工具 - ${toolName}`);
 }
 
 /**
  * Notify that AI is asking user a question
  */
 export function notifyAskUserQuestion(): void {
-    void notify('MyAgents - 需求确认', 'AI 等待您的确认相关信息');
+    void notify('SoAgents - 需求确认', 'AI 等待您的确认相关信息');
 }
 
 /**
  * Notify that AI is requesting plan mode approval (EnterPlanMode or ExitPlanMode)
  */
 export function notifyPlanModeRequest(): void {
-    void notify('MyAgents - 方案审核', 'AI 等待您审核方案');
+    void notify('SoAgents - 方案审核', 'AI 等待您审核方案');
 }
 
 /**

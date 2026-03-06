@@ -19,7 +19,7 @@ const MENU_EXIT: &str = "exit";
 /// Initialize the system tray with icon and menu
 pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
     // Build the tray menu
-    let open_item = MenuItemBuilder::with_id(MENU_OPEN, "打开 MyAgents").build(app)?;
+    let open_item = MenuItemBuilder::with_id(MENU_OPEN, "打开 SoAgents").build(app)?;
     let settings_item = MenuItemBuilder::with_id(MENU_SETTINGS, "设置").build(app)?;
     let exit_item = MenuItemBuilder::with_id(MENU_EXIT, "退出").build(app)?;
 
@@ -48,7 +48,7 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     let tray_builder = TrayIconBuilder::new()
         .icon(tray_icon)
         .menu(&menu)
-        .tooltip("MyAgents")
+        .tooltip("SoAgents")
         .show_menu_on_left_click(false);
 
     // On macOS, mark as template image so system can adjust colors for light/dark mode

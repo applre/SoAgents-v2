@@ -3293,7 +3293,7 @@ async function main() {
           // Output to Desktop
           const desktopDir = joinPath(homedir(), 'Desktop');
           const timestamp = new Date().toISOString().slice(0, 10);
-          const zipName = `MyAgents-logs-${timestamp}.zip`;
+          const zipName = `SoAgents-logs-${timestamp}.zip`;
           const zipPath = joinPath(desktopDir, zipName);
 
           // Create zip using platform-appropriate command
@@ -3647,7 +3647,7 @@ async function main() {
                     params: {
                       protocolVersion: '2025-03-26',
                       capabilities: {},
-                      clientInfo: { name: 'MyAgents', version: '0.1.29' },
+                      clientInfo: { name: 'SoAgents', version: '0.1.29' },
                     },
                   }),
                   signal: controller.signal,

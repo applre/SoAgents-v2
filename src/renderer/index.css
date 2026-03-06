@@ -112,21 +112,25 @@
   --text-brand: 56px; /* 品牌展示 */
 
   /* ========== Colors: Ink (Text) ========== */
-  --ink: #1c1612;
-  --ink-secondary: #2e2825;
+  --ink: #1A1A1A;
+  --ink-secondary: #666666;
+  --ink-tertiary: #999999;
   --ink-muted: #6f6156;
   --ink-subtle: #a69a90;
   --ink-faint: #c4b8ad;
 
   /* ========== Colors: Paper (Background) ========== */
-  --paper: #faf6ee;
+  --paper: #FBF9F6;
+  --surface: #F5F3F0;
   --paper-elevated: #fffcf7;
   --paper-inset: #e8dccf;
+  --hover: #EEEBE7;
   --hover-bg: rgba(194, 109, 58, 0.07); /* 通用列表项 hover：7% 暖棕 accent，与整体棕色调一致 */
 
   /* ========== Colors: Accent ========== */
-  --accent: #c26d3a;
-  --accent-warm: #c26d3a;
+  --accent: #C4956A;
+  --accent-light: #E8C9A8;
+  --accent-warm: #C4956A;
   --accent-warm-hover: #e18a58;
   --accent-warm-subtle: rgba(194, 109, 58, 0.08);
   --accent-warm-muted: rgba(194, 109, 58, 0.15);
@@ -139,12 +143,12 @@
   --heartbeat-border: rgba(199, 80, 80, 0.20);
 
   /* ========== Colors: Semantic ========== */
-  --success: #2d8a5e;
+  --success: #2e6f5e;
   --success-bg: #e2f0e8;
-  --error: #dc2626;
+  --error: #c25a3a;
   --error-bg: #fee2e2;
   --error-hover: #b91c1c;
-  --warning: #d97706;
+  --warning: #c29a3a;
   --warning-bg: #fef3c7;
   --info: #4a7ab5;
   --info-bg: #e4ecf4;
@@ -160,6 +164,7 @@
   --button-secondary-text: #1c1612;
 
   /* ========== Colors: Border ========== */
+  --border: #E8E6E3;
   --line: rgb(28 22 18 / 0.10);
   --line-strong: rgb(28 22 18 / 0.18);
   --line-subtle: rgb(28 22 18 / 0.06);
@@ -207,29 +212,17 @@ body {
 }
 
 body {
-  font-family: var(--font-body);
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif, var(--font-chinese);
+  background-color: var(--paper);
   color: var(--ink);
-  background:
-    radial-gradient(1200px 700px at 82% -10%, #efd0bd 0%, transparent 55%),
-    radial-gradient(900px 600px at -10% 110%, #cdddd5 0%, transparent 55%),
-    linear-gradient(120deg, rgb(255 255 255 / 0.5), rgb(255 255 255 / 0)), var(--paper);
+  overflow: hidden;
   min-height: 100vh;
   /* Cross-platform font rendering */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(rgb(28 22 18 / 0.08) 0.7px, transparent 0.7px);
-  background-size: 3px 3px;
-  opacity: 0.22;
-  mix-blend-mode: multiply;
-  z-index: 0;
 }
 
 #root {
@@ -386,6 +379,10 @@ button:disabled {
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--ink-muted);
 }
+
+/* Scrollbar hide utility (used by SoAgents sidebar/tab bars) */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 
 /* Shimmer animation for thinking state */
 @keyframes shimmer {

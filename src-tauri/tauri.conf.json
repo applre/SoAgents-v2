@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "MyAgents",
+  "productName": "SoAgents",
   "version": "0.1.36",
-  "identifier": "com.myagents.app",
+  "identifier": "com.soagents.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "MyAgents",
+        "title": "SoAgents",
         "label": "main",
         "width": 1200,
         "height": 800,

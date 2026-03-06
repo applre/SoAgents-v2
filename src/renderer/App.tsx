@@ -20,6 +20,7 @@ import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarR
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomTitleBar from '@/components/CustomTitleBar';
 import TabBar from '@/components/TabBar';
+import LeftSidebar from '@/components/LeftSidebar';
 import WorkspaceFilesPanel from '@/components/WorkspaceFilesPanel';
 import { EditorActionBar, RichTextToolbar } from '@/components/EditorToolbar';
 import type { ToolbarAction } from '@/components/EditorToolbar';
@@ -44,11 +45,11 @@ import { getAllCronTasks, getTabCronTask, updateCronTaskTab } from '@/api/cronTa
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson, apiPostJson } from '@/api/apiFetch';
-import { updateSession } from '@/api/sessionClient';
+import { updateSession, getSessions, deleteSession, type SessionMetadata } from '@/api/sessionClient';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
 import { ensureSelfAwarenessWorkspace } from '@/config/configService';
-import { Loader2, PanelRightOpen, PanelRightClose, MessageSquare, FileText, X } from 'lucide-react';
+import { Loader2, PanelLeft, PanelRightOpen, PanelRightClose, MessageSquare, FileText, X } from 'lucide-react';
 
 // ============================================================
 // User Support Prompt Builder
@@ -317,9 +318,14 @@ export default function App() {
   const launchingTabRef = useRef<string | null>(null);
 
   // ── Three-panel layout state ──
+  const [showLeftSidebar, setShowLeftSidebar] = useState(true);
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   // Editor action ref: exposed by Editor component via onActionRef
   const editorActionRef = useRef<{ handleAction: (a: ToolbarAction) => void; save: () => void } | null>(null);
+
+  // ── LeftSidebar: session list data ──
+  const [sidebarSessions, setSidebarSessions] = useState<SessionMetadata[]>([]);
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(new Set());
 
   // Active tab (memoized)
   const activeTab = useMemo(
@@ -1456,6 +1462,93 @@ export default function App() {
     });
   }, []);
 
+  // ── LeftSidebar: fetch sessions for the active workspace ──
+  const sidebarAgentDir = activeTab?.agentDir ?? null;
+
+  useEffect(() => {
+    if (!sidebarAgentDir) {
+      setSidebarSessions([]);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      getSessions(sidebarAgentDir).then((data) => {
+        if (!cancelled) setSidebarSessions(data);
+      }).catch(() => {});
+    };
+    load();
+    // Refetch when session title changes
+    const handler = () => load();
+    window.addEventListener(CUSTOM_EVENTS.SESSION_TITLE_CHANGED, handler);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CUSTOM_EVENTS.SESSION_TITLE_CHANGED, handler);
+    };
+  }, [sidebarAgentDir]);
+
+  // Derive running sessions from tabs (for LeftSidebar green dot indicator)
+  const runningSessions = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of tabs) {
+      if (t.isGenerating && t.sessionId) set.add(t.sessionId);
+    }
+    return set;
+  }, [tabs]);
+
+  // LeftSidebar: select a session from the sidebar
+  const handleSidebarSelectSession = useCallback((sessionId: string) => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    void handleSwitchSession(tabId, sessionId);
+  }, [handleSwitchSession]);
+
+  // LeftSidebar: create a new chat
+  const handleSidebarNewChat = useCallback(() => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    void handleNewSession(tabId);
+  }, [handleNewSession]);
+
+  // LeftSidebar: delete a session
+  const handleSidebarDeleteSession = useCallback(async (sessionId: string) => {
+    const success = await deleteSession(sessionId);
+    if (success) {
+      await deactivateSession(sessionId);
+      setSidebarSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      // If the deleted session is active in current tab, reset to new conversation
+      const currentTab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
+      if (currentTab?.sessionId === sessionId) {
+        void handleNewSession(currentTab.id);
+      }
+    }
+  }, [handleNewSession]);
+
+  // LeftSidebar: rename a session
+  const handleSidebarRenameSession = useCallback(async (sessionId: string, title: string) => {
+    try {
+      await updateSession(sessionId, { title, titleSource: 'user' });
+      setSidebarSessions((prev) =>
+        prev.map((s) => s.id === sessionId ? { ...s, title, titleSource: 'user' as const } : s)
+      );
+      // Also update tab title if this session is open in a tab
+      setTabs((prev) =>
+        prev.map((t) => t.sessionId === sessionId ? { ...t, title } : t)
+      );
+    } catch (err) {
+      console.error('[App] Failed to rename session:', err);
+    }
+  }, []);
+
+  // LeftSidebar: toggle pin (local-only, not persisted)
+  const handleSidebarTogglePin = useCallback((sessionId: string) => {
+    setPinnedSessionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  }, []);
+
   // Open Settings as a new tab (or switch to existing one)
   // Optional initialSection parameter to open a specific section (e.g., 'providers')
   const handleOpenSettings = useCallback(async (initialSection?: string, mcpServerId?: string) => {
@@ -1660,8 +1753,40 @@ export default function App() {
         />
       </CustomTitleBar>
 
-      {/* Three-panel layout: main content + optional files panel */}
+      {/* Three-panel layout: LeftSidebar + main content + optional files panel */}
       <div className="flex flex-1 overflow-hidden">
+        {/* Left panel: Session sidebar */}
+        {showLeftSidebar && activeTab?.view === 'chat' && activeTab.agentDir && (
+          <LeftSidebar
+            sessions={sidebarSessions}
+            activeSessionId={activeTab.sessionId}
+            pinnedSessionIds={pinnedSessionIds}
+            runningSessions={runningSessions}
+            onNewChat={handleSidebarNewChat}
+            onSelectSession={handleSidebarSelectSession}
+            onDeleteSession={handleSidebarDeleteSession}
+            onRenameSession={handleSidebarRenameSession}
+            onTogglePin={handleSidebarTogglePin}
+            onOpenSettings={() => void handleOpenSettings()}
+            onCollapse={() => setShowLeftSidebar(false)}
+            isSettingsActive={false}
+            updateReady={updateReady}
+            updateVersion={updateVersion}
+            onRestartAndUpdate={() => void restartAndUpdate()}
+          />
+        )}
+
+        {/* Left sidebar toggle (when collapsed) */}
+        {!showLeftSidebar && activeTab?.view === 'chat' && activeTab.agentDir && (
+          <button
+            onClick={() => setShowLeftSidebar(true)}
+            title="展开侧边栏"
+            className="fixed left-3 bottom-3 z-30 flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--paper)] text-[var(--ink-tertiary)] border border-[var(--border)] shadow-md hover:bg-[var(--hover)] hover:text-[var(--ink)] transition-colors"
+          >
+            <PanelLeft size={16} />
+          </button>
+        )}
+
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* SecondTabBar: chat + file tabs (only for chat view with open files) */}
           {activeTab && activeTab.view === 'chat' && activeTab.openFiles.length > 0 && (

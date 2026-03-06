@@ -14,6 +14,14 @@ export interface InitialMessage {
     mcpEnabledServers?: string[];
 }
 
+/** 在 Tab 内打开的文件或 URL */
+export interface OpenFile {
+    filePath: string;       // 文件绝对路径 或 URL
+    title: string;          // 显示名称
+    mode: 'edit' | 'preview';
+    isUrl?: boolean;        // true = URL，用 Tauri WebView 渲染
+}
+
 export interface Tab {
     id: string;
     agentDir: string | null;  // null = showing Launcher
@@ -26,6 +34,10 @@ export interface Tab {
     // Sidecar lifecycle is now managed by SidecarManager's Owner model.
     // Use getSessionPort(sessionId) to get the port when needed.
     joinedExistingSidecar?: boolean;  // Tab joined an already-running sidecar (e.g. IM Bot session)
+    /** 当前 Tab 内打开的文件列表（三栏布局 SecondTabBar 使用） */
+    openFiles: OpenFile[];
+    /** 当前激活的子 Tab：'chat' = 对话，string = 文件路径 */
+    activeSubTab: 'chat' | string;
 }
 
 export interface TabState {
@@ -70,5 +82,7 @@ export function createNewTab(): Tab {
         sessionId: null,
         view: 'launcher',
         title: 'New Tab',
+        openFiles: [],
+        activeSubTab: 'chat',
     };
 }

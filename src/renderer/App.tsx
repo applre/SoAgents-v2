@@ -1,11 +1,28 @@
-import { useCallback, useEffect, useState, useRef, memo } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef, memo } from 'react';
 import { arrayMove } from '@dnd-kit/sortable';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 import { initAnalytics, track } from '@/analytics';
 import { stopTabSidecar, startGlobalSidecar, stopAllSidecars, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomTitleBar from '@/components/CustomTitleBar';
 import TabBar from '@/components/TabBar';
+import WorkspaceFilesPanel from '@/components/WorkspaceFilesPanel';
+import { EditorActionBar, RichTextToolbar } from '@/components/EditorToolbar';
+import type { ToolbarAction } from '@/components/EditorToolbar';
 import TabProvider from '@/context/TabProvider';
 import { useToast } from '@/components/Toast';
 import { useUpdater } from '@/hooks/useUpdater';
@@ -13,13 +30,15 @@ import { useTrayEvents } from '@/hooks/useTrayEvents';
 import { useConfig } from '@/hooks/useConfig';
 import { useTabSwipeGesture } from '@/hooks/useTabSwipeGesture';
 import Chat from '@/pages/Chat';
+import Editor from '@/pages/Editor';
+import WebViewPanel from '@/pages/WebViewPanel';
 import Launcher from '@/pages/Launcher';
 import Settings from '@/pages/Settings';
 import {
   type Project,
   type Provider,
 } from '@/config/types';
-import { type Tab, type InitialMessage, createNewTab, getFolderName, MAX_TABS } from '@/types/tab';
+import { type Tab, type OpenFile, type InitialMessage, createNewTab, getFolderName, MAX_TABS } from '@/types/tab';
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import { getAllCronTasks, getTabCronTask, updateCronTaskTab } from '@/api/cronTaskClient';
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
@@ -29,7 +48,7 @@ import { updateSession } from '@/api/sessionClient';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl } from '@/utils/frontendLogger';
 import { CUSTOM_EVENTS, createPendingSessionId } from '../shared/constants';
 import { ensureSelfAwarenessWorkspace } from '@/config/configService';
-import { Loader2 } from 'lucide-react';
+import { Loader2, PanelRightOpen, PanelRightClose, MessageSquare, FileText, X } from 'lucide-react';
 
 // ============================================================
 // User Support Prompt Builder
@@ -48,6 +67,78 @@ function buildSupportPrompt(description: string, appVersion: string): string {
 }
 
 // ============================================================
+// SortableFileTab — draggable file tab in SecondTabBar
+// ============================================================
+
+function SortableFileTab({ file, isActive, onActivate, onClose }: {
+  file: OpenFile;
+  isActive: boolean;
+  onActivate: (filePath: string) => void;
+  onClose: (filePath: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: file.filePath });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`group flex shrink-0 min-w-[100px] items-center gap-1.5 rounded-md transition-colors ${
+        !isActive ? 'hover:bg-[var(--hover)]' : ''
+      }`}
+      onClick={() => onActivate(file.filePath)}
+    >
+      <div
+        className="flex items-center gap-1.5"
+        style={{
+          height: 34,
+          borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+          padding: '0 8px',
+          cursor: 'pointer',
+        }}
+      >
+        <FileText size={14} className="shrink-0" style={{ color: isActive ? 'var(--ink-secondary)' : 'var(--ink-tertiary)' }} />
+        <span
+          title={file.title}
+          className="max-w-[160px] truncate"
+          style={{
+            fontSize: 14,
+            fontWeight: isActive ? 600 : 500,
+            color: isActive ? 'var(--ink)' : 'var(--ink-tertiary)',
+          }}
+        >
+          {file.title}
+        </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); onClose(file.filePath); }}
+          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition-all hover:bg-black/10 ${
+            isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          style={{ color: 'var(--ink-tertiary)' }}
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MemoizedTabContent — prevents re-rendering tabs whose props haven't changed.
 // When switching tabs, only the newly active and previously active tabs re-render.
 // ============================================================
@@ -55,6 +146,8 @@ function buildSupportPrompt(description: string, appVersion: string): string {
 interface TabContentProps {
   tab: Tab;
   isActive: boolean;
+  /** Whether this content should be visually displayed (false when file sub-tab is active) */
+  isVisible: boolean;
   isLoading: boolean;
   error: string | null;
   settingsInitialSection: string | undefined;
@@ -82,7 +175,7 @@ interface TabContentProps {
 }
 
 const MemoizedTabContent = memo(function TabContent({
-  tab, isActive, isLoading, error,
+  tab, isActive, isVisible, isLoading, error,
   onLaunchProject, onBack, onSwitchSession, onNewSession,
   onUpdateGenerating, onUpdateTitle, onRenameSession, onUpdateSessionId, onClearInitialMessage,
   onClearJoinedExistingSidecar,
@@ -92,8 +185,8 @@ const MemoizedTabContent = memo(function TabContent({
 }: TabContentProps) {
   return (
     <div
-      className={`absolute inset-0 ${isActive ? '' : 'pointer-events-none invisible'}`}
-      style={isActive ? undefined : { contentVisibility: 'hidden' }}
+      className={`absolute inset-0 ${isVisible ? '' : 'pointer-events-none invisible'}`}
+      style={isVisible ? undefined : { contentVisibility: 'hidden' }}
     >
       {tab.view === 'launcher' ? (
         <Launcher
@@ -146,6 +239,7 @@ const MemoizedTabContent = memo(function TabContent({
   return (
     prev.tab === next.tab &&
     prev.isActive === next.isActive &&
+    prev.isVisible === next.isVisible &&
     prev.isLoading === next.isLoading &&
     prev.error === next.error &&
     prev.settingsInitialSection === next.settingsInitialSection &&
@@ -221,6 +315,125 @@ export default function App() {
 
   // Per-tab launch guard — prevents concurrent launches overwriting each other's state
   const launchingTabRef = useRef<string | null>(null);
+
+  // ── Three-panel layout state ──
+  const [showFilesPanel, setShowFilesPanel] = useState(false);
+  // Editor action ref: exposed by Editor component via onActionRef
+  const editorActionRef = useRef<{ handleAction: (a: ToolbarAction) => void; save: () => void } | null>(null);
+
+  // Active tab (memoized)
+  const activeTab = useMemo(
+    () => tabs.find((t) => t.id === activeTabId) ?? tabs[0],
+    [tabs, activeTabId]
+  );
+
+  // Currently active OpenFile (when file sub-tab is active)
+  const activeOpenFile = useMemo<OpenFile | null>(() => {
+    if (!activeTab || activeTab.activeSubTab === 'chat') return null;
+    return activeTab.openFiles.find((f) => f.filePath === activeTab.activeSubTab) ?? null;
+  }, [activeTab]);
+
+  // Open a file in the current workspace tab's SecondTabBar
+  const openEditorFile = useCallback((filePath: string) => {
+    const title = filePath.split('/').pop() ?? filePath;
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabIdRef.current) return t;
+        const existing = t.openFiles.find((f) => f.filePath === filePath);
+        const openFiles = existing
+          ? t.openFiles
+          : [...t.openFiles, { filePath, title, mode: 'edit' as const }];
+        return { ...t, openFiles, activeSubTab: filePath };
+      })
+    );
+  }, []);
+
+  // Open a URL in the SecondTabBar as a WebView tab
+  const openUrl = useCallback((url: string) => {
+    let title: string;
+    try { title = new URL(url).hostname; } catch { title = url; }
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabIdRef.current) return t;
+        const existing = t.openFiles.find((f) => f.filePath === url);
+        const openFiles = existing
+          ? t.openFiles
+          : [...t.openFiles, { filePath: url, title, mode: 'preview' as const, isUrl: true }];
+        return { ...t, openFiles, activeSubTab: url };
+      })
+    );
+  }, []);
+
+  // Close a file tab
+  const handleCloseFileTab = useCallback((filePath: string) => {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== activeTabIdRef.current) return t;
+        const openFiles = t.openFiles.filter((f) => f.filePath !== filePath);
+        const activeSubTab = t.activeSubTab === filePath
+          ? (openFiles[openFiles.length - 1]?.filePath ?? 'chat')
+          : t.activeSubTab;
+        return { ...t, openFiles, activeSubTab };
+      })
+    );
+  }, []);
+
+  // Switch sub-tab (chat or file path); optionally inject file reference into chat
+  const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
+  const handleSwitchSubTab = useCallback((subTab: 'chat' | string, fromFilePath?: string) => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    setTabs((prev) =>
+      prev.map((t) => t.id === tabId ? { ...t, activeSubTab: subTab } : t)
+    );
+    if (subTab === 'chat' && fromFilePath) {
+      setPendingInjects((prev) => ({ ...prev, [tabId]: fromFilePath }));
+    }
+  }, []);
+
+  // Toggle file edit/preview mode
+  const handleSetFileMode = useCallback((mode: 'edit' | 'preview') => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t;
+        return {
+          ...t,
+          openFiles: t.openFiles.map((f) =>
+            f.filePath === t.activeSubTab ? { ...f, mode } : f
+          ),
+        };
+      })
+    );
+  }, []);
+
+  // Drag-sort file tabs
+  const fileTabSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
+  const handleFileTabDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    const currentTab = tabsRef.current.find(t => t.id === tabId);
+    if (!currentTab) return;
+    const files = currentTab.openFiles;
+    const oldIndex = files.findIndex((f) => f.filePath === active.id);
+    const newIndex = files.findIndex((f) => f.filePath === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t;
+        return { ...t, openFiles: arrayMove(t.openFiles, oldIndex, newIndex) };
+      })
+    );
+  }, []);
+
+  const isEditorActive = activeTab?.activeSubTab !== 'chat'
+    && activeTab?.activeSubTab !== undefined
+    && !activeOpenFile?.isUrl;
 
   // Global Sidecar silent retry mechanism
   const mountedRef = useRef(true);
@@ -1275,6 +1488,8 @@ export default function App() {
       sessionId: null,
       view: 'settings',
       title: '设置',
+      openFiles: [],
+      activeSubTab: 'chat',
     };
     setTabs((prev) => [...prev, newTab]);
     setActiveTabId(newTab.id);
@@ -1445,37 +1660,160 @@ export default function App() {
         />
       </CustomTitleBar>
 
-      {/* Tab content - only Chat views need TabProvider for sidecar communication */}
-      <div ref={contentRef} className="relative flex-1 overflow-hidden">
-        {tabs.map((tab) => (
-          <MemoizedTabContent
-            key={tab.id}
-            tab={tab}
-            isActive={tab.id === activeTabId}
-            isLoading={loadingTabs[tab.id] ?? false}
-            error={tabErrors[tab.id] ?? null}
-            onLaunchProject={handleLaunchProject}
-            onBack={handleBackToLauncher}
-            onSwitchSession={handleSwitchSession}
-            onNewSession={handleNewSession}
-            onUpdateGenerating={updateTabGenerating}
-            onUpdateTitle={updateTabTitle}
-            onRenameSession={handleRenameSession}
-            onUpdateSessionId={updateTabSessionId}
-            onClearInitialMessage={clearInitialMessage}
-            onClearJoinedExistingSidecar={clearJoinedExistingSidecar}
-            settingsInitialSection={tab.view === 'settings' ? settingsInitialSection : undefined}
-            settingsInitialMcpId={tab.view === 'settings' ? settingsInitialMcpId : undefined}
-            onSettingsSectionChange={handleSettingsSectionChange}
-            updateReady={updateReady}
-            updateVersion={updateVersion}
-            updateChecking={updateChecking}
-            updateDownloading={updateDownloading}
-            onCheckForUpdate={checkForUpdate}
-            onRestartAndUpdate={handleRestartAndUpdate}
+      {/* Three-panel layout: main content + optional files panel */}
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* SecondTabBar: chat + file tabs (only for chat view with open files) */}
+          {activeTab && activeTab.view === 'chat' && activeTab.openFiles.length > 0 && (
+            <div
+              className="flex items-center shrink-0 overflow-x-auto bg-[var(--paper)] scrollbar-hide"
+              style={{ borderBottom: '1px solid var(--border)', padding: '0 20px', gap: 4, height: 44 }}
+            >
+              <button
+                onClick={() => handleSwitchSubTab('chat')}
+                className="flex shrink-0 items-center gap-1.5 px-3 transition-colors"
+                style={{
+                  height: 34,
+                  fontSize: 14,
+                  fontWeight: activeTab.activeSubTab === 'chat' ? 600 : 500,
+                  color: activeTab.activeSubTab === 'chat' ? 'var(--ink)' : 'var(--ink-tertiary)',
+                  borderBottom: activeTab.activeSubTab === 'chat' ? '2px solid var(--accent)' : '2px solid transparent',
+                  borderRadius: 0,
+                }}
+              >
+                <MessageSquare size={14} className="shrink-0" />
+                <span>对话</span>
+              </button>
+
+              <DndContext
+                sensors={fileTabSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleFileTabDragEnd}
+              >
+                <SortableContext items={activeTab.openFiles.map((f) => f.filePath)} strategy={horizontalListSortingStrategy}>
+                  {activeTab.openFiles.map((f) => (
+                    <SortableFileTab
+                      key={f.filePath}
+                      file={f}
+                      isActive={activeTab.activeSubTab === f.filePath}
+                      onActivate={(fp) => handleSwitchSubTab(fp)}
+                      onClose={handleCloseFileTab}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
+            </div>
+          )}
+
+          {/* Editor toolbar: only when a file tab (non-URL) is active */}
+          {isEditorActive && activeOpenFile && (() => {
+            const isPreviewable = /\.(md|markdown|html|htm)$/i.test(activeOpenFile.filePath);
+            const isMarkdown = /\.(md|markdown)$/i.test(activeOpenFile.filePath);
+            return (
+              <>
+                <EditorActionBar
+                  mode={isPreviewable ? activeOpenFile.mode : 'edit'}
+                  onModeChange={isPreviewable ? handleSetFileMode : undefined}
+                  onSave={() => editorActionRef.current?.save()}
+                  onGoToChat={() => handleSwitchSubTab('chat', activeOpenFile.filePath)}
+                />
+                {isMarkdown && (
+                  <RichTextToolbar
+                    mode={activeOpenFile.mode}
+                    onAction={(action) => editorActionRef.current?.handleAction(action)}
+                  />
+                )}
+              </>
+            );
+          })()}
+
+          {/* Tab content */}
+          <div ref={contentRef} className="relative flex-1 overflow-hidden">
+            {tabs.map((tab) => {
+              const isActive = tab.id === activeTabId;
+              const isChatSubTabActive = tab.activeSubTab === 'chat';
+
+              return (
+                <div key={tab.id}>
+                  {/* Main tab content (chat/launcher/settings) — hidden when file sub-tab is active */}
+                  <MemoizedTabContent
+                    tab={tab}
+                    isActive={isActive}
+                    isVisible={isActive && isChatSubTabActive}
+                    isLoading={loadingTabs[tab.id] ?? false}
+                    error={tabErrors[tab.id] ?? null}
+                    onLaunchProject={handleLaunchProject}
+                    onBack={handleBackToLauncher}
+                    onSwitchSession={handleSwitchSession}
+                    onNewSession={handleNewSession}
+                    onUpdateGenerating={updateTabGenerating}
+                    onUpdateTitle={updateTabTitle}
+                    onRenameSession={handleRenameSession}
+                    onUpdateSessionId={updateTabSessionId}
+                    onClearInitialMessage={clearInitialMessage}
+                    onClearJoinedExistingSidecar={clearJoinedExistingSidecar}
+                    settingsInitialSection={tab.view === 'settings' ? settingsInitialSection : undefined}
+                    settingsInitialMcpId={tab.view === 'settings' ? settingsInitialMcpId : undefined}
+                    onSettingsSectionChange={handleSettingsSectionChange}
+                    updateReady={updateReady}
+                    updateVersion={updateVersion}
+                    updateChecking={updateChecking}
+                    updateDownloading={updateDownloading}
+                    onCheckForUpdate={checkForUpdate}
+                    onRestartAndUpdate={handleRestartAndUpdate}
+                  />
+
+                  {/* File sub-tabs (Editor / WebViewPanel) */}
+                  {isActive && tab.openFiles.map((f) => {
+                    const fileVisible = tab.activeSubTab === f.filePath;
+                    return (
+                      <div
+                        key={`${tab.id}:${f.filePath}`}
+                        className={`absolute inset-0 ${fileVisible ? 'flex flex-col' : 'pointer-events-none invisible'}`}
+                        style={fileVisible ? undefined : { contentVisibility: 'hidden' }}
+                      >
+                        {f.isUrl ? (
+                          <WebViewPanel url={f.filePath} visible={fileVisible} />
+                        ) : (
+                          <Editor
+                            filePath={f.filePath}
+                            mode={f.mode}
+                            onActionRef={(ref) => { if (fileVisible) editorActionRef.current = ref; }}
+                            onOpenUrl={openUrl}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right panel: Workspace Files */}
+        {showFilesPanel && activeTab?.view !== 'settings' && (
+          <WorkspaceFilesPanel
+            agentDir={activeTab?.agentDir ?? null}
+            onOpenFile={openEditorFile}
           />
-        ))}
+        )}
       </div>
+
+      {/* Files panel toggle button (floating) */}
+      {activeTab?.view === 'chat' && (
+        <button
+          onClick={() => setShowFilesPanel((v) => !v)}
+          title="工作区文件"
+          className={`fixed right-3 bottom-3 z-30 flex h-9 w-9 items-center justify-center rounded-lg shadow-md transition-colors ${
+            showFilesPanel
+              ? 'bg-[var(--accent)] text-white'
+              : 'bg-[var(--paper)] text-[var(--ink-tertiary)] border border-[var(--border)] hover:bg-[var(--hover)] hover:text-[var(--ink)]'
+          }`}
+        >
+          {showFilesPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+        </button>
+      )}
 
       {/* Exit confirmation dialog for running cron tasks */}
       {exitConfirmState && (

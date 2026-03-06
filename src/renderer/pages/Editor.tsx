@@ -1,0 +1,262 @@
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import CodeMirror from '@uiw/react-codemirror';
+import { EditorView } from '@codemirror/view';
+import { getLangExtension } from '../utils/codemirror';
+import { EditorSelection } from '@codemirror/state';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import type { ToolbarAction } from '../components/EditorToolbar';
+import { apiGetJson, apiPostJson } from '../api/apiFetch';
+import { isTauri } from '../utils/env';
+
+interface Props {
+  filePath: string;
+  mode: 'edit' | 'preview';
+  onSave?: (filePath: string) => void;
+  onActionRef?: (ref: { handleAction: (action: ToolbarAction) => void; save: () => void }) => void;
+  onOpenUrl?: (url: string) => void;
+}
+
+const cmTheme = EditorView.theme({
+  '&': { fontSize: '15px', height: '100%' },
+  '.cm-scroller': { fontFamily: "'SF Mono', 'Menlo', monospace", lineHeight: '1.7', overflow: 'auto' },
+  '.cm-content': { padding: '16px 24px', minHeight: '100%' },
+  '.cm-focused': { outline: 'none' },
+  '.cm-line': { padding: '0' },
+});
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'tiff', 'avif']);
+const BINARY_EXTS = new Set(['pdf', 'zip', 'tar', 'gz', 'exe', 'dmg', 'bin', 'wasm', 'ttf', 'otf', 'woff', 'woff2', 'mp3', 'mp4', 'mov', 'avi']);
+
+function getFileExt(filePath: string) {
+  return filePath.split('.').pop()?.toLowerCase() ?? '';
+}
+function isImageFile(filePath: string) { return IMAGE_EXTS.has(getFileExt(filePath)); }
+function isBinaryFile(filePath: string) { return BINARY_EXTS.has(getFileExt(filePath)); }
+
+// getLangExtension 已提取到 ../utils/codemirror.ts
+
+// 是否为 Markdown 文件（支持预览模式）
+function isMarkdownFile(filePath: string) {
+  return /\.(md|markdown)$/i.test(filePath);
+}
+
+// 是否为 HTML 文件（支持预览模式）
+function isHtmlFile(filePath: string) {
+  return /\.(html|htm)$/i.test(filePath);
+}
+
+export default function Editor({ filePath, mode, onSave, onActionRef, onOpenUrl }: Props) {
+  const [content, setContent] = useState('');
+  const editorViewRef = useRef<EditorView | null>(null);
+  const langExtension = useMemo(() => getLangExtension(filePath), [filePath]);
+  const isMarkdown = useMemo(() => isMarkdownFile(filePath), [filePath]);
+  const isHtml = useMemo(() => isHtmlFile(filePath), [filePath]);
+  const isImage = useMemo(() => isImageFile(filePath), [filePath]);
+  const isBinary = useMemo(() => isBinaryFile(filePath), [filePath]);
+  // 非 Markdown/HTML 文件强制 edit 模式
+  const effectiveMode = (isMarkdown || isHtml) ? mode : 'edit';
+
+  // 加载文件内容（图片/二进制跳过）
+  useEffect(() => {
+    if (!filePath || isImage || isBinary) return;
+    apiGetJson<{ content: string }>(`/api/file-read?path=${encodeURIComponent(filePath)}`)
+      .then((res) => setContent(res.content))
+      .catch(console.error);
+  }, [filePath, isImage, isBinary]);
+
+  const save = useCallback(async () => {
+    if (!filePath) return;
+    try {
+      await apiPostJson('/api/file-write', { path: filePath, content });
+      onSave?.(filePath);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [filePath, content, onSave]);
+
+  // Cmd+S 保存
+  useEffect(() => {
+    const onKeydown = async (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key !== 's') return;
+      e.preventDefault();
+      if (filePath) {
+        await save();
+      } else if (isTauri()) {
+        const { save: saveDialog } = await import('@tauri-apps/plugin-dialog');
+        const chosen = await saveDialog({ filters: [{ name: 'Markdown', extensions: ['md'] }], defaultPath: 'untitled.md' });
+        if (chosen) {
+          await apiPostJson('/api/file-write', { path: chosen, content });
+          onSave?.(chosen);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeydown);
+    return () => window.removeEventListener('keydown', onKeydown);
+  }, [filePath, content, save, onSave]);
+
+  // 工具栏操作 — 在 CodeMirror 光标处插入 / 包裹文本
+  const handleAction = useCallback((action: ToolbarAction) => {
+    const view = editorViewRef.current;
+    if (!view) return;
+    const { state } = view;
+    const { from, to } = state.selection.main;
+    const selected = state.doc.sliceString(from, to);
+
+    let insert = '';
+    let cursorOffset = 0;
+
+    switch (action) {
+      case 'bold':
+        insert = selected ? `**${selected}**` : '**粗体**';
+        cursorOffset = selected ? 0 : -3;
+        break;
+      case 'italic':
+        insert = selected ? `*${selected}*` : '*斜体*';
+        cursorOffset = selected ? 0 : -2;
+        break;
+      case 'h1':
+        insert = `\n# ${selected || '标题'}`;
+        break;
+      case 'h2':
+        insert = `\n## ${selected || '标题'}`;
+        break;
+      case 'h3':
+        insert = `\n### ${selected || '标题'}`;
+        break;
+      case 'code':
+        insert = selected ? `\`${selected}\`` : '`代码`';
+        cursorOffset = selected ? 0 : -2;
+        break;
+      case 'codeblock':
+        insert = `\n\`\`\`\n${selected || ''}\n\`\`\`\n`;
+        break;
+      case 'link':
+        insert = selected ? `[${selected}](url)` : '[链接文字](url)';
+        cursorOffset = selected ? -1 : -18;
+        break;
+      case 'divider':
+        insert = '\n---\n';
+        break;
+      case 'ul':
+        insert = `\n- ${selected || '列表项'}`;
+        break;
+      case 'ol':
+        insert = `\n1. ${selected || '列表项'}`;
+        break;
+      case 'quote':
+        insert = `\n> ${selected || '引用'}`;
+        break;
+      case 'table':
+        insert = '\n| 列1 | 列2 |\n| --- | --- |\n| 内容 | 内容 |\n';
+        break;
+    }
+
+    const newFrom = from;
+    const newTo = from + insert.length + cursorOffset;
+    view.dispatch({
+      changes: { from, to, insert },
+      selection: EditorSelection.cursor(newTo < newFrom ? newFrom + insert.length : newTo),
+    });
+    view.focus();
+  }, []);
+
+  // 暴露 handleAction 和 save 给父组件
+  useEffect(() => {
+    onActionRef?.({ handleAction, save });
+  }, [handleAction, save, onActionRef]);
+
+  if (isImage) {
+    return (
+      <div className="flex flex-1 items-center justify-center overflow-auto bg-[var(--paper)]" style={{ padding: 32 }}>
+        <img
+          src={convertFileSrc(filePath)}
+          alt={filePath.split('/').pop()}
+          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
+        />
+      </div>
+    );
+  }
+
+  if (isBinary) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-[var(--ink-tertiary)] text-[14px]">
+        二进制文件，无法预览
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-hidden">
+      {effectiveMode === 'edit' ? (
+        <CodeMirror
+          value={content}
+          extensions={[langExtension, cmTheme]}
+          onChange={setContent}
+          onCreateEditor={(view) => { editorViewRef.current = view; }}
+          basicSetup={{
+            lineNumbers: !isMarkdown,
+            foldGutter: false,
+            highlightActiveLine: true,
+            autocompletion: false,
+          }}
+          style={{ height: '100%' }}
+        />
+      ) : isHtml ? (
+        <iframe
+          srcDoc={content}
+          sandbox="allow-scripts"
+          className="w-full h-full border-0 bg-white"
+          title="HTML Preview"
+        />
+      ) : (
+        <div className="h-full overflow-y-auto px-8 py-6">
+          <div
+            className="mx-auto prose prose-sm max-w-3xl text-[var(--ink)]"
+            style={{ '--tw-prose-body': 'var(--ink)', '--tw-prose-headings': 'var(--ink)' } as React.CSSProperties}
+          >
+            {content ? (
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  code({ className, children, ...props }: any) {
+                    const match = /language-(\w+)/.exec(className || '');
+                    return match ? (
+                      <SyntaxHighlighter style={oneLight} language={match[1]} PreTag="div">
+                        {String(children).replace(/\n$/, '')}
+                      </SyntaxHighlighter>
+                    ) : (
+                      <code className={className} {...props}>{children}</code>
+                    );
+                  },
+                  a({ href, children }) {
+                    if (href?.startsWith('http') && onOpenUrl) {
+                      return (
+                        <a
+                          href={href}
+                          onClick={(e) => { e.preventDefault(); onOpenUrl(href); }}
+                          title={href}
+                        >
+                          {children}
+                        </a>
+                      );
+                    }
+                    return <a href={href}>{children}</a>;
+                  },
+                }}
+              >
+                {content}
+              </ReactMarkdown>
+            ) : (
+              <p className="text-[var(--ink-tertiary)] italic">空文档</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

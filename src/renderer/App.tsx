@@ -384,17 +384,13 @@ export default function App() {
     );
   }, []);
 
-  // Switch sub-tab (chat or file path); optionally inject file reference into chat
-  const [pendingInjects, setPendingInjects] = useState<Record<string, string>>({});
-  const handleSwitchSubTab = useCallback((subTab: 'chat' | string, fromFilePath?: string) => {
+  // Switch sub-tab (chat or file path)
+  const handleSwitchSubTab = useCallback((subTab: 'chat' | string) => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
     setTabs((prev) =>
       prev.map((t) => t.id === tabId ? { ...t, activeSubTab: subTab } : t)
     );
-    if (subTab === 'chat' && fromFilePath) {
-      setPendingInjects((prev) => ({ ...prev, [tabId]: fromFilePath }));
-    }
   }, []);
 
   // Toggle file edit/preview mode
@@ -1841,7 +1837,7 @@ export default function App() {
                   mode={isPreviewable ? activeOpenFile.mode : 'edit'}
                   onModeChange={isPreviewable ? handleSetFileMode : undefined}
                   onSave={() => editorActionRef.current?.save()}
-                  onGoToChat={() => handleSwitchSubTab('chat', activeOpenFile.filePath)}
+                  onGoToChat={() => handleSwitchSubTab('chat')}
                 />
                 {isMarkdown && (
                   <RichTextToolbar

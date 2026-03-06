@@ -225,7 +225,7 @@ function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; 
 
   const agentDir = getArgValue('--agent-dir') ?? '';
   const initialPrompt = getArgValue('--prompt') ?? undefined;
-  const port = Number(getArgValue('--port') ?? 3000);
+  const port = Number(getArgValue('--port') ?? 3002);
   const sessionId = getArgValue('--session-id') ?? undefined;
   const noPreWarm = args.includes('--no-pre-warm');
 

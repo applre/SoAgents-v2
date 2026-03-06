@@ -44,24 +44,24 @@ export default defineConfig({
     '__BUILD_VERSIONS__': JSON.stringify(buildVersions),
   },
   server: {
-    port: 5173,
+    port: 5175,
     proxy: {
       // All API endpoints under /api/ (excludes source files like /api/*.ts)
       '^/api/(?!.*\\.(ts|tsx|js|jsx)$)': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3002',
         changeOrigin: true,
         rewrite: (path) => path, // Keep path as-is
       },
       '/chat': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3002',
         changeOrigin: true,
       },
       '/agent': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3002',
         changeOrigin: true,
       },
       '/sessions': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3002',
         changeOrigin: true,
       }
     }

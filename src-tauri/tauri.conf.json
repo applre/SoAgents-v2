@@ -5,7 +5,7 @@
   "identifier": "com.soagents.app",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5175",
     "beforeDevCommand": "npm run dev:web",
     "beforeBuildCommand": "npm run build:web"
   },

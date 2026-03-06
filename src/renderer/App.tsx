@@ -1762,6 +1762,7 @@ export default function App() {
             activeSessionId={activeTab.sessionId}
             pinnedSessionIds={pinnedSessionIds}
             runningSessions={runningSessions}
+            agentDir={activeTab.agentDir}
             onNewChat={handleSidebarNewChat}
             onSelectSession={handleSidebarSelectSession}
             onDeleteSession={handleSidebarDeleteSession}

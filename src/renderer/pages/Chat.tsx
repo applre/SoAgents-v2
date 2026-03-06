@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, History, Loader2, Plus, PanelRightOpen } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Loader2, PanelRightOpen } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { track } from '@/analytics';
@@ -7,7 +7,7 @@ import { useToast } from '@/components/Toast';
 import DirectoryPanel, { type DirectoryPanelHandle } from '@/components/DirectoryPanel';
 import DropZoneOverlay from '@/components/DropZoneOverlay';
 import MessageList from '@/components/MessageList';
-import SessionHistoryDropdown from '@/components/SessionHistoryDropdown';
+
 import { FileActionProvider } from '@/context/FileActionContext';
 import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
@@ -165,7 +165,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
   // PERFORMANCE: inputValue is now managed internally by SimpleChatInput
   // to avoid re-rendering Chat (and MessageList) on every keystroke
   const [showLogs, setShowLogs] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(true); // Workspace panel visibility
   const [showWorkspaceConfig, setShowWorkspaceConfig] = useState(false); // Workspace config panel
   const [workspaceRefreshKey, _setWorkspaceRefreshKey] = useState(0); // Key to trigger workspace refresh
@@ -1232,43 +1231,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
       });
   }, [apiPost, setMessages, setIsLoading]); // all stable — refs handle the rest
 
-  // Handler for selecting a session from history dropdown
-  const handleSelectSession = useCallback((id: string) => {
-    track('session_switch');
-    if (onSwitchSession) {
-      onSwitchSession(id);
-    } else {
-      if (cronStateRef.current.task?.status === 'running') {
-        console.log('[Chat] Cannot switch session while cron task is running (no onSwitchSession handler)');
-        return;
-      }
-      void loadSession(id);
-    }
-  }, [onSwitchSession, loadSession]);
-
-  // Internal handler for starting a new session
-  // If AI is running, App.tsx handles it via background completion (returns true).
-  // If AI is idle, falls back to resetSession (reuses Sidecar).
-  const handleNewSession = useCallback(async () => {
-    if (onNewSession) {
-      const handled = await onNewSession();
-      if (handled) {
-        // App.tsx started background completion and created new Sidecar
-        // TabProvider will detect sessionId change and reconnect
-        return;
-      }
-    }
-
-    // Fallback: AI is idle, reset session within existing Sidecar
-    console.log('[Chat] Starting new session...');
-    const success = await resetSession();
-    if (success) {
-      console.log('[Chat] New session started');
-    } else {
-      console.error('[Chat] Failed to start new session');
-    }
-  }, [onNewSession, resetSession]);
-
   return (
     <div className="flex h-full flex-col overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)] md:flex-row">
       <div className={`flex min-w-0 flex-1 flex-col overflow-hidden border-b border-[var(--line-subtle)] md:border-r md:border-b-0 ${showWorkspace ? 'w-full md:w-3/4' : 'w-full'}`}>
@@ -1303,39 +1265,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, initialMes
             )}
           </div>
           <div className="flex items-center gap-2">
-            {/* New Session button - before History */}
-            <button
-              type="button"
-              onClick={handleNewSession}
-              className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-              title="新建对话"
-            >
-              <Plus className="h-3.5 w-3.5 flex-shrink-0" />
-              <span className="hidden sm:inline">新对话</span>
-            </button>
-            {/* History button */}
-            <div className="relative">
-              <button
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => setShowHistory((prev) => !prev)}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors ${showHistory
-                  ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
-                  : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                  }`}
-              >
-                <History className="h-3.5 w-3.5 flex-shrink-0" />
-                <span className="hidden sm:inline">历史</span>
-              </button>
-              <SessionHistoryDropdown
-                agentDir={agentDir}
-                currentSessionId={sessionId}
-                onSelectSession={handleSelectSession}
-                onDeleteCurrentSession={handleNewSession}
-                isOpen={showHistory}
-                onClose={() => setShowHistory(false)}
-              />
-            </div>
             {/* Dev-only buttons - controlled by config.showDevTools */}
             {config.showDevTools && (
               <>

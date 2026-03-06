@@ -1,8 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { BarChart2, Clock, MoreHorizontal, PanelLeft, Pencil, Pin, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import appIcon from '../../../icon.png';
 import { startWindowDrag, toggleMaximize } from '../utils/env';
 import type { SessionMetadata } from '@/api/sessionClient';
+import { getWorkspaceCronTasks } from '@/api/cronTaskClient';
+import type { CronTask } from '@/types/cronTask';
+import { isTauriEnvironment } from '@/utils/browserMock';
+import type { ImBotStatus } from '../../shared/types/im';
+import { formatTokens } from '@/utils/formatTokens';
+import SessionTagBadge from './SessionTagBadge';
+import SessionStatsModal from './SessionStatsModal';
 import SearchModal from './SearchModal';
 
 interface Props {
@@ -10,6 +18,8 @@ interface Props {
   activeSessionId: string | null;
   pinnedSessionIds: Set<string>;
   runningSessions?: Set<string>;
+  /** The workspace agentDir — needed to fetch cron tasks and IM statuses */
+  agentDir: string | null;
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
@@ -28,6 +38,7 @@ export default function LeftSidebar({
   activeSessionId,
   pinnedSessionIds,
   runningSessions,
+  agentDir,
   onNewChat,
   onSelectSession,
   onDeleteSession,
@@ -45,6 +56,57 @@ export default function LeftSidebar({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
+  const [showAll, setShowAll] = useState(false);
+
+  // Cron task and IM bot data (fetched internally, like SessionHistoryDropdown)
+  const [cronTasks, setCronTasks] = useState<CronTask[]>([]);
+  const [imBotStatuses, setImBotStatuses] = useState<Record<string, ImBotStatus>>({});
+
+  // Fetch cron tasks and IM bot statuses when agentDir changes
+  useEffect(() => {
+    if (!agentDir) return;
+    let cancelled = false;
+
+    const imStatusPromise = isTauriEnvironment()
+      ? import('@tauri-apps/api/core')
+          .then(({ invoke }) => invoke<Record<string, ImBotStatus>>('cmd_im_all_bots_status'))
+          .catch(() => ({} as Record<string, ImBotStatus>))
+      : Promise.resolve({} as Record<string, ImBotStatus>);
+
+    Promise.allSettled([
+      getWorkspaceCronTasks(agentDir),
+      imStatusPromise,
+    ]).then(([cronResult, imResult]) => {
+      if (cancelled) return;
+      if (cronResult.status === 'fulfilled') setCronTasks(cronResult.value);
+      if (imResult.status === 'fulfilled') setImBotStatuses(imResult.value);
+    });
+
+    return () => { cancelled = true; };
+  }, [agentDir]);
+
+  // Map sessionId → running cron task
+  const sessionCronTaskMap = useMemo(() => {
+    return new Map(
+      cronTasks.filter(t => t.status === 'running').map(t => [t.sessionId, t])
+    );
+  }, [cronTasks]);
+
+  // Map sessionId → IM bot platform name
+  const sessionImBotMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const status of Object.values(imBotStatuses)) {
+      if (status.status !== 'online' && status.status !== 'connecting') continue;
+      for (const activeSession of status.activeSessions) {
+        const parts = activeSession.sessionKey.split(':');
+        const platform = parts[1];
+        map.set(activeSession.sessionId, platform.charAt(0).toUpperCase() + platform.slice(1));
+      }
+    }
+    return map;
+  }, [imBotStatuses]);
 
   const sessionTitle = useCallback((s: SessionMetadata) => {
     return s.title || '未命名对话';
@@ -70,7 +132,7 @@ export default function LeftSidebar({
     }
   }, [editingId]);
 
-  const sortedSessions = React.useMemo(() => {
+  const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => {
       const aPinned = pinnedSessionIds.has(a.id);
       const bPinned = pinnedSessionIds.has(b.id);
@@ -78,6 +140,39 @@ export default function LeftSidebar({
       return 0;
     });
   }, [sessions, pinnedSessionIds]);
+
+  const INITIAL_LIMIT = 20;
+  const displaySessions = showAll ? sortedSessions : sortedSessions.slice(0, INITIAL_LIMIT);
+  const hasMore = sortedSessions.length > INITIAL_LIMIT && !showAll;
+
+  const handleDeleteClick = useCallback((sessionId: string) => {
+    setMenuOpenId(null);
+    setPendingDeleteId(sessionId);
+  }, []);
+
+  const handleConfirmDelete = useCallback(() => {
+    if (pendingDeleteId) {
+      onDeleteSession(pendingDeleteId);
+      setPendingDeleteId(null);
+    }
+  }, [pendingDeleteId, onDeleteSession]);
+
+  const formatTime = useCallback((isoString: string) => {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) {
+      return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    } else if (diffDays === 1) {
+      return '昨天';
+    } else if (diffDays < 7) {
+      return `${diffDays}天前`;
+    } else {
+      return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+    }
+  }, []);
 
   return (
     <div
@@ -148,11 +243,17 @@ export default function LeftSidebar({
             {menuOpenId && (
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpenId(null)} />
             )}
-            {sortedSessions.slice(0, 10).map((s) => {
+            {displaySessions.map((s) => {
               const isActive = s.id === activeSessionId;
               const isPinned = pinnedSessionIds.has(s.id);
               const isMenuOpen = menuOpenId === s.id;
               const isEditing = editingId === s.id;
+              const isDeleting = pendingDeleteId === s.id;
+              const hasCron = sessionCronTaskMap.has(s.id);
+              const imPlatform = sessionImBotMap.get(s.id);
+              const stats = s.stats;
+              const hasStats = stats && (stats.messageCount > 0 || stats.totalInputTokens > 0);
+              const totalTokens = (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0);
 
               return (
                 <div key={s.id} className="group relative">
@@ -168,24 +269,66 @@ export default function LeftSidebar({
                       onBlur={commitRename}
                       className="w-full rounded-lg px-2 py-1.5 text-[14px] bg-white border border-[var(--accent)] outline-none text-[var(--ink)]"
                     />
+                  ) : isDeleting ? (
+                    /* 删除确认 */
+                    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 bg-red-50">
+                      <span className="flex-1 truncate text-[13px] text-red-600">
+                        删除「{sessionTitle(s)}」？
+                      </span>
+                      <button
+                        onClick={handleConfirmDelete}
+                        className="flex h-6 items-center justify-center rounded bg-[var(--error)] px-2 text-[12px] font-medium text-white hover:bg-[var(--error)]/80 transition-colors"
+                      >
+                        确认
+                      </button>
+                      <button
+                        onClick={() => setPendingDeleteId(null)}
+                        className="flex h-6 items-center justify-center rounded bg-[var(--paper-inset)] px-2 text-[12px] font-medium text-[var(--ink-muted)] hover:bg-[var(--line)] transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
                   ) : (
                     <>
                       <button
                         onClick={() => onSelectSession(s.id)}
-                        className={`w-full rounded-lg px-2 py-1.5 text-left text-[14px] transition-colors truncate pr-8 flex items-center gap-1.5 ${
+                        className={`w-full rounded-lg px-2 py-1.5 text-left transition-colors pr-8 ${
                           isActive
                             ? 'bg-[var(--border)] text-[var(--ink)]'
                             : 'text-[var(--ink)] hover:bg-[var(--hover)]'
                         }`}
                       >
-                        {runningSessions?.has(s.id) && (
-                          <span className="relative flex h-2 w-2 shrink-0">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                            <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+                        <div className="flex items-center gap-1.5">
+                          {runningSessions?.has(s.id) && (
+                            <span className="relative flex h-2 w-2 shrink-0">
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                              <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+                            </span>
+                          )}
+                          {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
+                          {imPlatform && (
+                            <SessionTagBadge tag={{ type: 'im', platform: imPlatform }} />
+                          )}
+                          {hasCron && (
+                            <SessionTagBadge tag={{ type: 'cron' }} />
+                          )}
+                          <span className="truncate text-[14px]">{sessionTitle(s)}</span>
+                        </div>
+                        {/* 副信息：时间 + token 统计 */}
+                        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
+                          <span className="flex items-center gap-0.5">
+                            <Clock size={10} />
+                            {formatTime(s.lastActiveAt)}
                           </span>
-                        )}
-                        {isPinned && <Pin size={12} className="shrink-0 text-[var(--ink-tertiary)]" />}
-                        <span className="truncate">{sessionTitle(s)}</span>
+                          {hasStats && (
+                            <>
+                              <span>·</span>
+                              <span>{stats.messageCount}条</span>
+                              <span>·</span>
+                              <span>{formatTokens(totalTokens)}</span>
+                            </>
+                          )}
+                        </div>
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setMenuOpenId(isMenuOpen ? null : s.id); }}
@@ -220,17 +363,47 @@ export default function LeftSidebar({
                         {isPinned ? '取消置顶' : '置顶'}
                       </button>
                       <button
-                        onClick={() => { onDeleteSession(s.id); setMenuOpenId(null); }}
-                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50 transition-colors"
+                        onClick={() => {
+                          setStatsSession({ id: s.id, title: sessionTitle(s) });
+                          setMenuOpenId(null);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink)] hover:bg-[var(--hover)] transition-colors"
                       >
-                        <Trash2 size={14} />
-                        删除
+                        <BarChart2 size={14} />
+                        查看统计
                       </button>
+                      {/* Disable delete for sessions with running cron tasks */}
+                      {hasCron ? (
+                        <button
+                          disabled
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--ink-muted)] cursor-not-allowed opacity-40"
+                          title="请先停止心跳循环后再删除"
+                        >
+                          <Trash2 size={14} />
+                          删除
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleDeleteClick(s.id)}
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] text-red-500 hover:bg-red-50 transition-colors"
+                        >
+                          <Trash2 size={14} />
+                          删除
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
               );
             })}
+            {hasMore && (
+              <button
+                onClick={() => setShowAll(true)}
+                className="w-full py-2 text-center text-[13px] text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors"
+              >
+                查看更多（共 {sortedSessions.length} 个）
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -241,6 +414,16 @@ export default function LeftSidebar({
           onSelectSession={onSelectSession}
           onClose={() => setShowSearch(false)}
         />
+      )}
+
+      {/* Session 统计弹窗 */}
+      {statsSession && createPortal(
+        <SessionStatsModal
+          sessionId={statsSession.id}
+          sessionTitle={statsSession.title}
+          onClose={() => setStatsSession(null)}
+        />,
+        document.body,
       )}
 
       {/* 固定底部：更新提示 + 设置 */}
